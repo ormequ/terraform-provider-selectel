@@ -124,7 +124,7 @@ func resourceIAMServiceUserV1Update(ctx context.Context, d *schema.ResourceData,
 
 	password := d.Get("password").(string)
 	if password == importIAMUndefined {
-		password = ""
+		password = "" // nosemgrep
 	}
 
 	opts := serviceusers.UpdateRequest{

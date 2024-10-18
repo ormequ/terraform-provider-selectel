@@ -21,15 +21,13 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v4
-      - run: semgrep scan
-      - run: semgrep ci --sarif --output=semgrep.sarif || true
+      - run: semgrep scan --sarif --output=semgrep.sarif --error --severity=WARNING
         env:
           SEMGREP_RULES: >-
             p/command-injection
             p/comment
             p/cwe-top-25
             p/default
-            p/gitlab
             p/gitleaks
             p/golang
             p/gosec

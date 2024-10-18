@@ -1,6 +1,7 @@
 package selectel
 
-import (
+//nolint:gci
+import ( // nosemgrep: gitlab.gosec.G501-1
 	"context"
 	"crypto/md5"
 	"errors"

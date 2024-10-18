@@ -56,7 +56,6 @@ func TestAccMKSClusterV1Basic(t *testing.T) {
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "status", "ACTIVE"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "feature_gates.0", defaultFeatureGates[0]),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "admission_controllers.0", defaultAdmissionControllers[0]),
-					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_audit_logs", "false"),
 				),
 			},
 			{
@@ -72,7 +71,6 @@ func TestAccMKSClusterV1Basic(t *testing.T) {
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "status", "ACTIVE"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "feature_gates.0", defaultFeatureGates[1]),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "admission_controllers.0", defaultAdmissionControllers[1]),
-					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_audit_logs", "true"),
 				),
 			},
 		},
@@ -109,7 +107,6 @@ func TestAccMKSClusterV1Zonal(t *testing.T) {
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "private_kube_api", "false"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "maintenance_window_start", maintenanceWindowStart),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "status", "ACTIVE"),
-					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_audit_logs", "true"),
 				),
 			},
 		},
@@ -146,7 +143,6 @@ func TestAccMKSClusterV1PrivateKubeAPI(t *testing.T) {
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "private_kube_api", "true"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "maintenance_window_start", maintenanceWindowStart),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "status", "ACTIVE"),
-					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_audit_logs", "false"),
 				),
 			},
 		},
@@ -294,7 +290,6 @@ resource "selectel_mks_cluster_v1" "cluster_tf_acc_test_1" {
   enable_pod_security_policy        = false
   feature_gates                     = [%s]
   admission_controllers             = [%s]
-  enable_audit_logs                 = true
 }`, projectName, clusterName, kubeVersion, maintenanceWindowStart, flatFeatureGates, flatAdmissionControllers)
 }
 
@@ -311,7 +306,6 @@ func testAccMKSClusterV1Zonal(projectName, clusterName, kubeVersion, maintenance
    maintenance_window_start          = "%s"
    enable_patch_version_auto_upgrade = false
    zonal                             = true
-   enable_audit_logs                 = true
  }`, projectName, clusterName, kubeVersion, maintenanceWindowStart)
 }
 
@@ -329,7 +323,6 @@ func testAccMKSClusterV1PrivateKubeAPI(projectName, clusterName, kubeVersion, ma
    enable_patch_version_auto_upgrade = false
    zonal                             = false
    private_kube_api                  = true
-   enable_audit_logs                 = false
  }`, projectName, clusterName, kubeVersion, maintenanceWindowStart)
 }
 

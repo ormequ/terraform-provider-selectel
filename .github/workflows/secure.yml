@@ -15,7 +15,7 @@ jobs:
   semgrep:
     runs-on: ubuntu-24.04
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep:1.91
     permissions:
       contents: read
       security-events: write

@@ -41,9 +41,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: semgrep scan --error --severity=WARNING
-      - uses: actions/checkout@v4
       - run: semgrep scan --sarif --output=semgrep.sarif --error --severity=WARNING
-      - uses: github/codeql-action/upload-sarif@v2
+      - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: semgrep.sarif
         if: always()

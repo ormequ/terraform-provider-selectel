@@ -15,13 +15,13 @@ jobs:
   semgrep:
     runs-on: ubuntu-24.04
     container:
-      image: semgrep/semgrep:1.86
+      image: semgrep/semgrep
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
-      - run: semgrep scan --sarif --output=semgrep.sarif --verbose --error --severity=WARNING
+      - run: semgrep scan --error --severity=WARNING
         env:
           SEMGREP_RULES: >-
             p/command-injection

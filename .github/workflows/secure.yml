@@ -34,7 +34,7 @@ jobs:
         p/sql-injection
         p/xss
     container:
-      image: semgrep/semgrep:1.86
+      image: semgrep/semgrep:1.80
     permissions:
       contents: read
       security-events: write

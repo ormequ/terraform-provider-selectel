@@ -813,6 +813,8 @@ func checkQuotasForCluster(projectQuotas []*quotas.Quota, clusterType cluster.Cl
 		quotaName = "mks_cluster_zonal"
 	case cluster.ClusterTypeHighAvailabilityMultiAZ:
 		quotaName = "mks_cluster_high_availability_multi_az"
+	case cluster.ClusterTypeHighAvailability:
+		fallthrough
 	default:
 		quotaName = "mks_cluster_regional"
 	}

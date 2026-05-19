@@ -569,5 +569,6 @@ func inferClusterType(d *schema.ResourceData, zonal bool) cluster.ClusterType {
 	if zonal {
 		return cluster.ClusterTypeBasic
 	}
+
 	return cluster.ClusterTypeHighAvailability
 }

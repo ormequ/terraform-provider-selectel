@@ -114,10 +114,23 @@ func resourceMKSClusterV1() *schema.Resource {
 				ForceNew: false,
 			},
 			"zonal": {
-				Type:     schema.TypeBool,
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				ForceNew:    true,
+				Description: "(Deprecated) Use cluster_type instead. This field will be removed in a future version.",
+			},
+			"cluster_type": {
+				Type:     schema.TypeString,
 				Optional: true,
-				Default:  false,
+				Computed: true,
 				ForceNew: true,
+				ValidateFunc: validation.StringInSlice([]string{
+					string(cluster.ClusterTypeBasic),
+					string(cluster.ClusterTypeHighAvailability),
+					string(cluster.ClusterTypeHighAvailabilityMultiAZ),
+				}, true),
+				Description: "The type of the cluster. Supported values: BASIC, HIGH_AVAILABILITY, HIGH_AVAILABILITY_MULTI_AZ. If not specified, it is inferred from the zonal argument.",
 			},
 			"maintenance_window_end": {
 				Type:     schema.TypeString,
@@ -285,15 +298,16 @@ func resourceMKSClusterV1Create(ctx context.Context, d *schema.ResourceData, met
 	privateKubeAPI := d.Get("private_kube_api").(bool)
 	enableAuditLogs := d.Get("enable_audit_logs").(bool)
 
-	enablePatchVersionAutoUpgrade := !zonal // true by default only for regional clusters
+	clusterType := inferClusterType(d, zonal)
+
+	enablePatchVersionAutoUpgrade := clusterType != cluster.ClusterTypeBasic
 	if v, ok := d.GetOk("enable_patch_version_auto_upgrade"); ok {
 		enablePatchVersionAutoUpgrade = v.(bool)
 	}
 
-	// Check if "enable_patch_version_auto_upgrade" and "zonal" arguments are both not set to true.
-	if enablePatchVersionAutoUpgrade && zonal {
+	if enablePatchVersionAutoUpgrade && clusterType == cluster.ClusterTypeBasic {
 		return diag.FromErr(errors.New("\"enable_patch_version_auto_upgrade\" argument should be explicitly " +
-			"set to false in case of zonal cluster"))
+			"set to false in case of basic cluster"))
 	}
 
 	featureGates, err := getSetAsStrings(d, featureGatesKey)
@@ -335,6 +349,7 @@ func resourceMKSClusterV1Create(ctx context.Context, d *schema.ResourceData, met
 			},
 			OIDC: oidc,
 		},
+		ClusterType:       &clusterType,
 		Zonal:             &zonal,
 		PrivateKubeAPI:    &privateKubeAPI,
 		CNIType:           cniType,
@@ -345,14 +360,12 @@ func resourceMKSClusterV1Create(ctx context.Context, d *schema.ResourceData, met
 		selvpcClient,
 		projectID,
 		region,
-		quotas.WithResourceFilter("mks_cluster_zonal"),
-		quotas.WithResourceFilter("mks_cluster_regional"),
 	)
 	if err != nil {
 		return diag.FromErr(errGettingObject(objectProjectQuotas, projectID, err))
 	}
 
-	if err := checkQuotasForCluster(projectQuotas, zonal); err != nil {
+	if err := checkQuotasForCluster(projectQuotas, clusterType); err != nil {
 		return diag.FromErr(errCreatingObject(objectCluster, err))
 	}
 
@@ -407,6 +420,7 @@ func resourceMKSClusterV1Read(ctx context.Context, d *schema.ResourceData, meta 
 	d.Set("enable_patch_version_auto_upgrade", mksCluster.EnablePatchVersionAutoUpgrade)
 	d.Set("enable_pod_security_policy", mksCluster.KubernetesOptions.EnablePodSecurityPolicy)
 	d.Set("zonal", mksCluster.Zonal)
+	d.Set("cluster_type", mksCluster.ClusterType)
 	d.Set("private_kube_api", mksCluster.PrivateKubeAPI)
 	d.Set("cni_type", mksCluster.CNIType)
 	d.Set("cni_cilium_settings", flattenMKSClusterV1CNICiliumSettings(mksCluster))
@@ -546,4 +560,15 @@ func resourceMKSClusterV1ImportState(_ context.Context, d *schema.ResourceData, 
 	d.Set("region", config.Region)
 
 	return []*schema.ResourceData{d}, nil
+}
+
+func inferClusterType(d *schema.ResourceData, zonal bool) cluster.ClusterType {
+	if v, ok := d.GetOk("cluster_type"); ok {
+		return cluster.ClusterType(strings.ToUpper(v.(string)))
+	}
+	if zonal {
+		return cluster.ClusterTypeBasic
+	}
+
+	return cluster.ClusterTypeHighAvailability
 }

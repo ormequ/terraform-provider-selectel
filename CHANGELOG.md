@@ -1,3 +1,16 @@
+## 7.8.0 (May 19, 2026)
+
+FEATURES:
+
+* Add `cluster_type` argument for `selectel_mks_cluster_v1` ([#392](https://github.com/selectel/terraform-provider-selectel/pull/392)):
+  * Support `BASIC`, `HIGH_AVAILABILITY`, and `HIGH_AVAILABILITY_MULTI_AZ` cluster types
+  * `cluster_type` takes precedence over legacy `zonal` argument
+  * Mark `zonal` as deprecated
+
+BUG FIXES:
+
+* Fix quota check to support regions without `mks_cluster_regional` quota ([#392](https://github.com/selectel/terraform-provider-selectel/pull/392))
+
 ## 7.7.0 (May 19, 2026)
 
 FEATURES:

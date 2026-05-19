@@ -126,6 +126,7 @@ func TestAccMKSClusterV1Zonal(t *testing.T) {
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_autorepair", "true"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_patch_version_auto_upgrade", "false"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "zonal", "true"),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "cluster_type", "BASIC"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "private_kube_api", "false"),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "maintenance_window_start", maintenanceWindowStart),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "status", "ACTIVE"),
@@ -181,6 +182,42 @@ func TestAccMKSClusterV1PrivateKubeAPI(t *testing.T) {
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "oidc.0.username_claim", ""),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "oidc.0.groups_claim", ""),
 					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "oidc.0.ca_certs", ""),
+				),
+			},
+		},
+	})
+}
+
+func TestAccMKSClusterV1MultiAZ(t *testing.T) {
+	var (
+		mksCluster cluster.GetView
+		project    projects.Project
+	)
+
+	projectName := acctest.RandomWithPrefix("tf-acc")
+	clusterName := acctest.RandomWithPrefix("tf-acc-cl")
+	kubeVersion := testAccMKSClusterV1GetDefaultKubeVersion(t)
+	maintenanceWindowStart := testAccMKSClusterV1GetMaintenanceWindowStart(12 * time.Hour)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccSelectelPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		CheckDestroy:      testAccCheckVPCV2ProjectDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccMKSClusterV1MultiAZ(projectName, clusterName, kubeVersion, maintenanceWindowStart),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckVPCV2ProjectExists("selectel_vpc_project_v2.project_tf_acc_test_1", &project),
+					testAccCheckMKSClusterV1Exists("selectel_mks_cluster_v1.cluster_tf_acc_test_1", &mksCluster),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "name", clusterName),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "kube_version", kubeVersion),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "region", "ru-9"),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_autorepair", "true"),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "enable_patch_version_auto_upgrade", "true"),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "cluster_type", "HIGH_AVAILABILITY_MULTI_AZ"),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "private_kube_api", "false"),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "maintenance_window_start", maintenanceWindowStart),
+					resource.TestCheckResourceAttr("selectel_mks_cluster_v1.cluster_tf_acc_test_1", "status", "ACTIVE"),
 				),
 			},
 		},
@@ -370,23 +407,38 @@ func testAccMKSClusterV1Zonal(projectName, clusterName, kubeVersion, maintenance
 
 func testAccMKSClusterV1PrivateKubeAPI(projectName, clusterName, kubeVersion, maintenanceWindowStart string) string {
 	return fmt.Sprintf(`
- resource "selectel_vpc_project_v2" "project_tf_acc_test_1" {
-   name        = "%s"
- }
- resource "selectel_mks_cluster_v1" "cluster_tf_acc_test_1" {
-   name                              = "%s"
-   kube_version                      = "%s"
-   project_id                        = "${selectel_vpc_project_v2.project_tf_acc_test_1.id}"
-   region                            = "ru-9"
-   maintenance_window_start          = "%s"
-   enable_patch_version_auto_upgrade = false
-   zonal                             = false
-   private_kube_api                  = true
-   enable_audit_logs                 = false
-   oidc {
-     enabled = false
-   }
- }`, projectName, clusterName, kubeVersion, maintenanceWindowStart)
+  resource "selectel_vpc_project_v2" "project_tf_acc_test_1" {
+    name        = "%s"
+  }
+  resource "selectel_mks_cluster_v1" "cluster_tf_acc_test_1" {
+    name                              = "%s"
+    kube_version                      = "%s"
+    project_id                        = "${selectel_vpc_project_v2.project_tf_acc_test_1.id}"
+    region                            = "ru-9"
+    maintenance_window_start          = "%s"
+    enable_patch_version_auto_upgrade = false
+    zonal                             = false
+    private_kube_api                  = true
+    enable_audit_logs                 = false
+    oidc {
+      enabled = false
+    }
+  }`, projectName, clusterName, kubeVersion, maintenanceWindowStart)
+}
+
+func testAccMKSClusterV1MultiAZ(projectName, clusterName, kubeVersion, maintenanceWindowStart string) string {
+	return fmt.Sprintf(`
+  resource "selectel_vpc_project_v2" "project_tf_acc_test_1" {
+    name        = "%s"
+  }
+  resource "selectel_mks_cluster_v1" "cluster_tf_acc_test_1" {
+    name                              = "%s"
+    kube_version                      = "%s"
+    project_id                        = "${selectel_vpc_project_v2.project_tf_acc_test_1.id}"
+    region                            = "ru-9"
+    maintenance_window_start          = "%s"
+    cluster_type                      = "HIGH_AVAILABILITY_MULTI_AZ"
+  }`, projectName, clusterName, kubeVersion, maintenanceWindowStart)
 }
 
 func testDefaultFeatureGates(t *testing.T) []string {

@@ -56,7 +56,7 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
 
   To upgrade a minor version, the desired version should match the next available minor release with the latest patch version.
 
-* `zonal` - (Optional) Specifies a cluster type. Changing this creates a new cluster.
+* `zonal` - (Optional, **Deprecated**, use `cluster_type` instead) Specifies a cluster type. Changing this creates a new cluster.
 
   Boolean flag:
 
@@ -65,6 +65,20 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
   * `true` - for a basic cluster with one master node. Set `enable_patch_version_auto_upgrade` to `false`.
 
   Learn more about [Cluster types](https://docs.selectel.ru/en/cloud/managed-kubernetes/about/about-managed-kubernetes/#cluster-types).
+
+* `cluster_type` - (Optional) The type of the cluster. Changing this creates a new cluster.
+
+  Supported values:
+  
+  * `BASIC` - for a basic cluster with one master node.
+  
+  * `HIGH_AVAILABILITY` (default) - for a high availability cluster with three master nodes located on different hosts in one pool segment.
+  
+  * `HIGH_AVAILABILITY_MULTI_AZ` - for a high availability cluster with three master nodes distributed across three pool segments.
+
+  Learn more about [Cluster types](https://docs.selectel.ru/en/cloud/managed-kubernetes/about/about-managed-kubernetes/#cluster-types).
+  
+  If both `zonal` and `cluster_type` are not specified, `HIGH_AVAILABILITY` is used by default. If `zonal` is set to `true`, `BASIC` is used. If `cluster_type` is explicitly set, it takes precedence over `zonal`.
 
 * `enable_autorepair` - (Optional) Enables or disables node auto-repairing (worker nodes are automatically restarted). Auto-repairing is not available if you have one worker node. After auto-repairing, all data on the boot volumes are deleted. Boolean flag, the default value is `true`. Learn more about [Nodes auto-repairing](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/reinstall-nodes/).
 

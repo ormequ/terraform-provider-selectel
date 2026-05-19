@@ -10,7 +10,7 @@ description: |-
 
 Creates and manages a user group for Selectel products using public API v1.
 Selectel products support Identity and Access Management (IAM).
-For more information about user groups, see the [official Selectel documentation](https://docs.selectel.ru/en/control-panel-actions/users-and-roles/groups/).
+For more information about user groups, see the [official Selectel documentation](https://docs.selectel.ru/en/access-control/groups/about-groups/).
 
 ## Example Usage
 
@@ -31,29 +31,13 @@ resource "selectel_iam_group_v1" "group_1" {
 
 * `description` - (Optional) Group description.
 
-* `role` - (Optional) Manages group roles. You can add multiple roles – each role in a separate block. For more information about roles, see the [Roles](#roles) section.
+* `role` - (Optional) Manages group roles. You can add multiple roles – each role in a separate block.
 
-    * `role_name` - (Required) Role name. Available role names are `iam_admin`, `member`, `reader`, and `billing`.
+    * `role_name` - (Required) Role name.
 
     * `scope` - (Required) Scope of the role. Available scopes are `account` and `project`. If `scope` is `project`, the `project_id` argument is required.
 
-    * `project_id` - (Optional) Unique identifier of the associated project. If `scope` is `project`, the `project_id` argument is required. Retrieved from the [selectel_vpc_project_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/vpc_project_v2) resource. Learn more about [Projects](https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/).
-
-### Roles
-
-To assign roles, use the following values for `scope` and `role_name`:
-
-* Account administrator - `scope` is `account`, `role_name` is `member`.
-
-* Billing administrator - `scope` is `account`, `role_name` is `billing`.
-
-* User administrator - `scope` is `account`, `role_name` is `iam_admin`.
-
-* Project administrator - `scope` is `project`, `role_name` is `member`.
-
-* Account viewer - `scope` is `account`, `role_name` is `reader`.
-
-* Project viewer - `scope` is `project`, `role_name` is `reader`.
+    * `project_id` - (Optional) Unique identifier of the associated project. If `scope` is `project`, the `project_id` argument is required. Retrieved from the [selectel_vpc_project_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/vpc_project_v2) resource. Learn more about [Projects](https://docs.selectel.ru/en/access-control/projects/about-projects/).
 
 ## Import
 
@@ -68,10 +52,10 @@ terraform import selectel_iam_group_v1.group_1 <group_id>
 
 where:
 
-* `<account_id>` — Selectel account ID. The account ID is in the top right corner of the [Control panel](https://my.selectel.ru/). Learn more about [Registration](https://docs.selectel.ru/en/control-panel-actions/account/registration/).
+* `<account_id>` — Selectel account ID. The account ID is in the top right corner of the [Control panel](https://my.selectel.ru/). Learn more about [Registration](https://docs.selectel.ru/en/account/registration/).
 
-* `<username>` — Name of the service user. To get the name, in the [Control panel](https://my.selectel.ru/iam/users_management/users?type=service), go to **Identity & Access Management** ⟶ **User management** ⟶ the **Service users** tab ⟶ copy the name of the required user. Learn more about [Service Users](https://docs.selectel.ru/en/control-panel-actions/users-and-roles/user-types-and-roles/).
+* `<username>` — Name of the service user. To get the name, in the [Control panel](https://my.selectel.ru/iam/service-users), go to **Account** ⟶ the **Service users** tab ⟶ copy the name of the required user. Learn more about [Service Users](https://docs.selectel.ru/en/access-control/user-types/).
 
 * `<password>` — Password of the service user.
 
-* `<group_id>` — Unique identifier of the group, for example, `abc1bb378ac84e1234b869b77aadd2ab`. To get the group ID, use either [iam-go](https://github.com/selectel/iam-go) or [IAM API](https://developers.selectel.ru/docs/control-panel/iam/).
+* `<group_id>` — Unique identifier of the group, for example, `abc1bb378ac84e1234b869b77aadd2ab`. To get the group ID, use either [Control panel](https://my.selectel.ru/iam/groups) or [IAM API](https://docs.selectel.ru/en/api/users-and-roles/).

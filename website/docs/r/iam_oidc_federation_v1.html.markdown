@@ -1,28 +1,30 @@
 ---
 layout: "selectel"
-page_title: "Selectel: selectel_iam_saml_federation_v1"
-sidebar_current: "docs-selectel-resource-iam-saml-federation-v1"
+page_title: "Selectel: selectel_iam_oidc_federation_v1"
+sidebar_current: "docs-selectel-resource-iam-oidc-federation-v1"
 description: |-
-  Creates and manages SAML Federation for Selectel products using public API v1.
+  Creates and manages OIDC Federation for Selectel products using public API v1.
 ---
 
-# selectel\_iam\_saml\_federation\_v1
+# selectel\_iam\_oidc\_federation\_v1
 
-Manages SAML Federation for Selectel products using public API v1.
+Manages OIDC Federation for Selectel products using public API v1.
 Selectel products support Identity and Access Management (IAM).
 For more information about federations, see the [official Selectel documentation](https://docs.selectel.ru/en/access-control/federations/).
 
 ## Example Usage
 
 ```hcl
-resource "selectel_iam_saml_federation_v1" "federation_1" {
+resource "selectel_iam_oidc_federation_v1" "federation_1" {
   name                  = "Federation name"
   alias                 = "federation-alias"
   description           = "Federation description"
-  issuer                = "http://localhost:8080/realms/master"
-  sso_url               = "http://localhost:8080/realms/master/protocol/saml"
-  sign_authn_requests   = true
-  force_authn           = true
+  issuer                = "https://idp.example.com/realms/master"
+  client_id             = "my-client-id"
+  client_secret         = "my-client-secret"
+  auth_url              = "https://idp.example.com/realms/master/protocol/openid-connect/auth"
+  token_url             = "https://idp.example.com/realms/master/protocol/openid-connect/token"
+  jwks_url              = "https://idp.example.com/realms/master/protocol/openid-connect/certs"
   auto_users_creation   = true
   enable_group_mappings = true
   session_max_age_hours = 24
@@ -39,11 +41,15 @@ resource "selectel_iam_saml_federation_v1" "federation_1" {
 
 * `issuer` - (Required) Unique identifier of the credential provider.
 
-* `sso_url` - (Required) Link to the credential provider login page.
+* `client_id` - (Required) Unique identifier of the client for OIDC authentication.
 
-* `sign_authn_requests` - (Optional) Enables signing of authentication requests.
+* `client_secret` - (Required, Sensitive) Client secret for OIDC authentication.
 
-* `force_authn` - (Optional) Requires users to authenticate via SSO every time they log in.
+* `auth_url` - (Required) URL of the authorization endpoint used to authenticate users via the OIDC provider.
+
+* `token_url` - (Required) URL of the token endpoint.
+
+* `jwks_url` - (Required) URL of the JSON Web Key Set (JWKS) endpoint with certificates used for token verification.
 
 * `auto_users_creation` - (Optional) Enables automatic user creation for this federation.
 
@@ -63,7 +69,7 @@ You can import a federation:
 export OS_DOMAIN_NAME=<account_id>
 export OS_USERNAME=<username>
 export OS_PASSWORD=<password>
-terraform import selectel_iam_saml_federation_v1.federation_1 <federation_id>
+terraform import selectel_iam_oidc_federation_v1.federation_1 <federation_id>
 ```
 
 where:

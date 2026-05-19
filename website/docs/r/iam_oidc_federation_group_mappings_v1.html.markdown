@@ -1,14 +1,14 @@
 ---
 layout: "selectel"
-page_title: "Selectel: selectel_iam_saml_federation_group_mappings_v1"
-sidebar_current: "docs-selectel-resource-iam-saml-federation-group-mappings-v1"
+page_title: "Selectel: selectel_iam_oidc_federation_group_mappings_v1"
+sidebar_current: "docs-selectel-resource-iam-oidc-federation-group-mappings-v1"
 description: |-
-  Manages SAML Federation group mappings for Selectel products using public API v1.
+  Manages OIDC Federation group mappings for Selectel products using public API v1.
 ---
 
-# selectel\_iam\_saml\_federation\_group\_mappings\_v1
+# selectel\_iam\_oidc\_federation\_group\_mappings\_v1
 
-Manages SAML federation group mappings for Selectel products using public API v1.
+Manages OIDC federation group mappings for Selectel products using public API v1.
 Selectel products support Identity and Access Management (IAM).
 For more information about group mappings, see the [official Selectel documentation](https://docs.selectel.ru/en/access-control/groups/mapping/).
 
@@ -16,7 +16,7 @@ For more information about group mappings, see the [official Selectel documentat
 
 ```hcl
 resource "selectel_iam_group_v1" "group_1" {
-  name = "example-group"
+  name = "Group name"
 
   role {
     role_name = "reader"
@@ -24,16 +24,20 @@ resource "selectel_iam_group_v1" "group_1" {
   }
 }
 
-resource "selectel_iam_saml_federation_v1" "federation_1" {
+resource "selectel_iam_oidc_federation_v1" "federation_1" {
   name                  = "Federation name"
   description           = "Federation description"
   issuer                = "https://idp.example.com/realms/master"
-  sso_url               = "https://idp.example.com/realms/master/protocol/saml"
+  client_id             = "my-client-id"
+  client_secret         = "my-client-secret"
+  auth_url              = "https://idp.example.com/realms/master/protocol/openid-connect/auth"
+  token_url             = "https://idp.example.com/realms/master/protocol/openid-connect/token"
+  jwks_url              = "https://idp.example.com/realms/master/protocol/openid-connect/certs"
   session_max_age_hours = 24
 }
 
-resource "selectel_iam_saml_federation_group_mappings_v1" "group_mappings_1" {
-  federation_id = selectel_iam_saml_federation_v1.federation_1.id
+resource "selectel_iam_oidc_federation_group_mappings_v1" "group_mappings_1" {
+  federation_id = selectel_iam_oidc_federation_v1.federation_1.id
 
   group_mapping {
     internal_group_id = selectel_iam_group_v1.group_1.id
@@ -58,13 +62,13 @@ resource "selectel_iam_saml_federation_group_mappings_v1" "group_mappings_1" {
 
 ## Import
 
-You can import SAML Federation group mappings:
+You can import OIDC Federation group mappings:
 
 ```shell
 export OS_DOMAIN_NAME=<account_id>
 export OS_USERNAME=<username>
 export OS_PASSWORD=<password>
-terraform import selectel_iam_saml_federation_group_mappings_v1.group_mappings_1 <federation_id>
+terraform import selectel_iam_oidc_federation_group_mappings_v1.group_mappings_1 <federation_id>
 ```
 
 where:
@@ -76,4 +80,3 @@ where:
 * `<password>` — Password of the service user.
 
 * `<federation_id>` — Unique identifier of the federation, for example, `abc1bb378ac84e1234b869b77aadd2ab`. To get the federation ID, in the [Control Panel](https://my.selectel.ru/iam/federations), go to **Account** → **Federations** → copy the ID under the federation name.
-

@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/selectel/go-selvpcclient/v4/selvpcclient/quotamanager/quotas"
 	v1 "github.com/selectel/mks-go/pkg/v1"
+	"github.com/selectel/mks-go/pkg/v1/cluster"
 	"github.com/selectel/mks-go/pkg/v1/kubeversion"
 	"github.com/selectel/mks-go/pkg/v1/node"
 	"github.com/selectel/mks-go/pkg/v1/nodegroup"
@@ -700,10 +701,10 @@ func TestCheckQuotasForClusterErrRegional(t *testing.T) {
 		},
 	}
 
-	err := checkQuotasForCluster(testQuotas, false)
+	err := checkQuotasForCluster(testQuotas, cluster.ClusterTypeHighAvailability)
 
 	assert.Error(t, err)
-	assert.Equal(t, "not enough quota to create regional k8s cluster", err.Error())
+	assert.Equal(t, "not enough quota to create high availability k8s cluster (mks_cluster_regional)", err.Error())
 }
 
 func TestCheckQuotasForClusterErrZonal(t *testing.T) {
@@ -720,28 +721,28 @@ func TestCheckQuotasForClusterErrZonal(t *testing.T) {
 		},
 	}
 
-	err := checkQuotasForCluster(testQuotas, true)
+	err := checkQuotasForCluster(testQuotas, cluster.ClusterTypeBasic)
 
 	assert.Error(t, err)
-	assert.Equal(t, "not enough quota to create zonal k8s cluster", err.Error())
+	assert.Equal(t, "not enough quota to create basic k8s cluster (mks_cluster_zonal)", err.Error())
 }
 
 func TestCheckQuotasForRegionalClusterErrUnableToCheck(t *testing.T) {
 	var testQuotas []*quotas.Quota
 
-	err := checkQuotasForCluster(testQuotas, false)
+	err := checkQuotasForCluster(testQuotas, cluster.ClusterTypeHighAvailability)
 
 	assert.Error(t, err)
-	assert.Equal(t, "unable to find regional k8s cluster quotas", err.Error())
+	assert.Equal(t, "unable to find high availability k8s cluster quotas (mks_cluster_regional)", err.Error())
 }
 
 func TestCheckQuotasForZonalClusterErrUnableToCheck(t *testing.T) {
 	var testQuotas []*quotas.Quota
 
-	err := checkQuotasForCluster(testQuotas, true)
+	err := checkQuotasForCluster(testQuotas, cluster.ClusterTypeBasic)
 
 	assert.Error(t, err)
-	assert.Equal(t, "unable to find zonal k8s cluster quotas", err.Error())
+	assert.Equal(t, "unable to find basic k8s cluster quotas (mks_cluster_zonal)", err.Error())
 }
 
 func TestCheckQuotasForClusterOkRegional(t *testing.T) {
@@ -758,7 +759,7 @@ func TestCheckQuotasForClusterOkRegional(t *testing.T) {
 		},
 	}
 
-	assert.NoError(t, checkQuotasForCluster(testQuotas, false))
+	assert.NoError(t, checkQuotasForCluster(testQuotas, cluster.ClusterTypeHighAvailability))
 }
 
 func TestCheckQuotasForClusterOkZonal(t *testing.T) {
@@ -775,7 +776,7 @@ func TestCheckQuotasForClusterOkZonal(t *testing.T) {
 		},
 	}
 
-	assert.NoError(t, checkQuotasForCluster(testQuotas, true))
+	assert.NoError(t, checkQuotasForCluster(testQuotas, cluster.ClusterTypeBasic))
 }
 
 var testQuotasFull = []*quotas.Quota{

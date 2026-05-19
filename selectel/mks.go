@@ -802,42 +802,36 @@ func findQuota(quotas []*quotas.Quota, resource string) []quotas.ResourceQuotaEn
 	return nil
 }
 
-func checkQuotasForCluster(projectQuotas []*quotas.Quota, zonal bool) error {
+func checkQuotasForCluster(projectQuotas []*quotas.Quota, clusterType cluster.ClusterType) error {
 	var (
 		clusterQuotaChecked bool
 		quota               []quotas.ResourceQuotaEntity
 	)
-
-	if zonal {
-		quota = findQuota(projectQuotas, "mks_cluster_zonal")
-	} else {
-		quota = findQuota(projectQuotas, "mks_cluster_regional")
+	var quotaName string
+	switch clusterType {
+	case cluster.ClusterTypeBasic:
+		quotaName = "mks_cluster_zonal"
+	case cluster.ClusterTypeHighAvailabilityMultiAZ:
+		quotaName = "mks_cluster_high_availability_multi_az"
+	default:
+		quotaName = "mks_cluster_regional"
 	}
+	quota = findQuota(projectQuotas, quotaName)
+
+	clusterTypeLabel := strings.ToLower(strings.ReplaceAll(string(clusterType), "_", " "))
 
 	if quota == nil {
-		if zonal {
-			return errors.New("unable to find zonal k8s cluster quotas")
-		}
-
-		return errors.New("unable to find regional k8s cluster quotas")
+		return fmt.Errorf("unable to find %s k8s cluster quotas (%s)", clusterTypeLabel, quotaName)
 	}
 
 	for _, v := range quota {
 		if v.Value-v.Used <= 0 {
-			if zonal {
-				return errors.New("not enough quota to create zonal k8s cluster")
-			}
-
-			return errors.New("not enough quota to create regional k8s cluster")
+			return fmt.Errorf("not enough quota to create %s k8s cluster (%s)", clusterTypeLabel, quotaName)
 		}
 		clusterQuotaChecked = true
 	}
 	if !clusterQuotaChecked {
-		if zonal {
-			return errors.New("unable to check zonal k8s cluster quotas for a given region")
-		}
-
-		return errors.New("unable to check regional k8s cluster quotas for a given region")
+		return fmt.Errorf("unable to check %s k8s cluster quotas for a given region (%s)", clusterTypeLabel, quotaName)
 	}
 
 	return nil

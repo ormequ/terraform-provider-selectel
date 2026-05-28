@@ -1,7 +1,10 @@
 package selectel
 
 import (
+	"fmt"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 const (
@@ -13,6 +16,8 @@ const (
 	dedicatedServerSchemaKeyPublicSubnetID           = "public_subnet_id"
 	dedicatedServerSchemaKeyPublicSubnetIP           = "public_subnet_ip"
 	dedicatedServerSchemaKeyPrivateSubnet            = "private_subnet"
+	dedicatedServerSchemaKeyPrivateSubnetID          = "private_subnet_id"
+	dedicatedServerSchemaKeyPrivateSubnetIP          = "private_subnet_ip"
 	dedicatedServerSchemaKeyOSUserData               = "user_data"
 	dedicatedServerSchemaKeyOSHostName               = "os_host_name"
 	dedicatedServerSchemaKeyOSSSHKey                 = "ssh_key"
@@ -20,9 +25,12 @@ const (
 	dedicatedServerSchemaKeyOSPartitionsConfig       = "partitions_config"
 	dedicatedServerSchemaKeySoftRaidConfig           = "soft_raid_config"
 	dedicatedServerSchemaKeyDiskPartitions           = "disk_partitions"
+	dedicatedServerSchemaKeyDiskConfig               = "disk_config"
 	dedicatedServerSchemaKeyName                     = "name"
 	dedicatedServerSchemaKeyLevel                    = "level"
 	dedicatedServerSchemaKeyDiskType                 = "disk_type"
+	dedicatedServerSchemaKeyDiskCount                = "count"
+	dedicatedServerSchemaKeyDiskName                 = "disk_name"
 	dedicatedServerSchemaKeyMount                    = "mount"
 	dedicatedServerSchemaKeySize                     = "size"
 	dedicatedServerSchemaKeySizePercent              = "size_percent"
@@ -30,6 +38,14 @@ const (
 	dedicatedServerSchemaKeyFSType                   = "fs_type"
 	dedicatedServerSchemaKeyOSPassword               = "os_password"
 	dedicatedServerSchemaForceUpdateAdditionalParams = "force_update_additional_params"
+	dedicatedServerSchemaKeyPowerState               = "power_state"
+	dedicatedServerSchemaPublicIP                    = "public_ip"
+	dedicatedServerSchemaPrivateIP                   = "private_ip"
+	dedicatedServerSchemaAddPrivateVlan              = "add_private_vlan"
+	dedicatedServerSchemaPrivateVlan                 = "private_vlan"
+	dedicatedServerPowerStateOn                      = "on"
+	dedicatedServerPowerStateOff                     = "off"
+	dedicatedServerPowerActionReboot                 = "reboot"
 )
 
 func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
@@ -40,16 +56,19 @@ func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
 			Required: true,
 		},
 		dedicatedServerSchemaKeyConfigurationID: {
-			Type:     schema.TypeString,
-			Required: true,
+			Type:         schema.TypeString,
+			Required:     true,
+			ValidateFunc: validation.IsUUID,
 		},
 		dedicatedServerSchemaKeyLocationID: {
-			Type:     schema.TypeString,
-			Required: true,
+			Type:         schema.TypeString,
+			Required:     true,
+			ValidateFunc: validation.IsUUID,
 		},
 		dedicatedServerSchemaKeyOSID: {
-			Type:     schema.TypeString,
-			Required: true,
+			Type:         schema.TypeString,
+			Required:     true,
+			ValidateFunc: validation.IsUUID,
 		},
 		dedicatedServerSchemaKeyPricePlanName: {
 			Type:     schema.TypeString,
@@ -77,6 +96,7 @@ func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
 		dedicatedServerSchemaKeyOSPartitionsConfig: {
 			Type:     schema.TypeList,
 			Optional: true,
+			Computed: true,
 			Elem: &schema.Resource{
 				Schema: map[string]*schema.Schema{
 					dedicatedServerSchemaKeySoftRaidConfig: {
@@ -91,10 +111,20 @@ func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
 								dedicatedServerSchemaKeyLevel: {
 									Type:     schema.TypeString,
 									Required: true,
+									ValidateFunc: validation.StringInSlice([]string{
+										string(dedicatedServerRaid0Level),
+										string(dedicatedServerRaid1Level),
+										string(dedicatedServerRaid10Level),
+									}, false),
 								},
 								dedicatedServerSchemaKeyDiskType: {
 									Type:     schema.TypeString,
 									Required: true,
+								},
+								dedicatedServerSchemaKeyDiskCount: {
+									Type:     schema.TypeInt,
+									Optional: true,
+									Computed: true,
 								},
 							},
 						},
@@ -104,6 +134,10 @@ func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
 						Optional: true,
 						Elem: &schema.Resource{
 							Schema: map[string]*schema.Schema{
+								dedicatedServerSchemaKeyDiskName: {
+									Type:     schema.TypeString,
+									Optional: true,
+								},
 								dedicatedServerSchemaKeyMount: {
 									Type:     schema.TypeString,
 									Required: true,
@@ -115,14 +149,32 @@ func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
 								dedicatedServerSchemaKeySizePercent: {
 									Type:     schema.TypeFloat,
 									Optional: true,
+									Computed: true,
 								},
 								dedicatedServerSchemaKeyRaid: {
 									Type:     schema.TypeString,
-									Required: true,
+									Optional: true,
 								},
 								dedicatedServerSchemaKeyFSType: {
 									Type:     schema.TypeString,
 									Optional: true,
+									Computed: true,
+								},
+							},
+						},
+					},
+					dedicatedServerSchemaKeyDiskConfig: {
+						Type:     schema.TypeList,
+						Optional: true,
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								dedicatedServerSchemaKeyName: {
+									Type:     schema.TypeString,
+									Required: true,
+								},
+								dedicatedServerSchemaKeyDiskType: {
+									Type:     schema.TypeString,
+									Required: true,
 								},
 							},
 						},
@@ -133,16 +185,50 @@ func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
 
 		// optional network params
 		dedicatedServerSchemaKeyPublicSubnetID: {
-			Type:     schema.TypeString,
-			Optional: true,
+			Type:         schema.TypeString,
+			Optional:     true,
+			ValidateFunc: validation.IsUUID,
 		},
 		dedicatedServerSchemaKeyPublicSubnetIP: {
-			Type:     schema.TypeString,
-			Optional: true,
+			Type:         schema.TypeString,
+			Optional:     true,
+			ValidateFunc: validation.IsIPAddress,
 		},
 		dedicatedServerSchemaKeyPrivateSubnet: {
+			Type:          schema.TypeString,
+			Optional:      true,
+			Deprecated:    fmt.Sprintf("Use `%s` instead.", dedicatedServerSchemaKeyPrivateSubnetID),
+			ConflictsWith: []string{dedicatedServerSchemaKeyPrivateSubnetID},
+		},
+
+		// optional power params
+		dedicatedServerSchemaKeyPowerState: {
 			Type:     schema.TypeString,
 			Optional: true,
+			Computed: true,
+			ValidateFunc: validation.StringInSlice([]string{
+				dedicatedServerPowerStateOn,
+				dedicatedServerPowerStateOff,
+				dedicatedServerPowerActionReboot,
+			}, false),
+		},
+		dedicatedServerSchemaKeyPrivateSubnetID: {
+			Type:          schema.TypeString,
+			Optional:      true,
+			ConflictsWith: []string{dedicatedServerSchemaKeyPrivateSubnet},
+			ValidateFunc:  validation.IsUUID,
+			RequiredWith:  []string{dedicatedServerSchemaKeyPrivateSubnetIP},
+		},
+		dedicatedServerSchemaKeyPrivateSubnetIP: {
+			Type:         schema.TypeString,
+			Optional:     true,
+			ValidateFunc: validation.IsIPv4Address,
+			RequiredWith: []string{dedicatedServerSchemaKeyPrivateSubnetID},
+		},
+		dedicatedServerSchemaAddPrivateVlan: {
+			Type:     schema.TypeBool,
+			Optional: true,
+			Default:  false,
 		},
 
 		// optional misc
@@ -153,6 +239,20 @@ func resourceDedicatedServerV1Schema() map[string]*schema.Schema {
 		dedicatedServerSchemaForceUpdateAdditionalParams: {
 			Type:     schema.TypeBool,
 			Optional: true,
+		},
+
+		// computed attributes
+		dedicatedServerSchemaPublicIP: {
+			Type:     schema.TypeString,
+			Computed: true,
+		},
+		dedicatedServerSchemaPrivateIP: {
+			Type:     schema.TypeString,
+			Computed: true,
+		},
+		dedicatedServerSchemaPrivateVlan: {
+			Type:     schema.TypeInt,
+			Computed: true,
 		},
 	}
 }

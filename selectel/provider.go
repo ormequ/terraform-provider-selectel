@@ -57,6 +57,7 @@ const (
 	objectDedicatedServer              = "dedicated-server"
 	objectOS                           = "os"
 	objectLocation                     = "location"
+	objectNetwork                      = "dedicated-network"
 	objectCloudBackupPlan              = "cloud-backup-plan"
 	objectCloudBackupCheckpoint        = "cloud-backup-checkpoint"
 	objectGlobalRouterZone             = "global-router-zone"
@@ -142,10 +143,12 @@ func Provider(providerVersion string) *schema.Provider {
 			"selectel_mks_kube_versions_v1":             dataSourceMKSKubeVersionsV1(),
 			"selectel_mks_feature_gates_v1":             dataSourceMKSFeatureGatesV1(),
 			"selectel_mks_admission_controllers_v1":     dataSourceMKSAdmissionControllersV1(),
+			"selectel_dedicated_servers_v1":             dataSourceDedicatedServersV1(),
 			"selectel_dedicated_configuration_v1":       dataSourceDedicatedConfigurationV1(),
 			"selectel_dedicated_os_v1":                  dataSourceDedicatedOSV1(),
 			"selectel_dedicated_location_v1":            dataSourceDedicatedLocationV1(),
 			"selectel_dedicated_public_subnet_v1":       dataSourceDedicatedPublicSubnetV1(),
+			"selectel_dedicated_private_subnet_v1":      dataSourceDedicatedPrivateSubnetV1(),
 			"selectel_cloudbackup_plan_v2":              dataSourceCloudBackupPlanV2(),
 			"selectel_cloudbackup_checkpoint_v2":        dataSourceCloudBackupCheckpointV2(),
 			"selectel_global_router_service_v1":         dataSourceGlobalRouterServiceV1(),
@@ -156,6 +159,7 @@ func Provider(providerVersion string) *schema.Provider {
 		ResourcesMap: map[string]*schema.Resource{
 			"selectel_vpc_floatingip_v2":                            resourceVPCFloatingIPV2(),
 			"selectel_vpc_keypair_v2":                               resourceVPCKeypairV2(),
+			"selectel_dedicated_ssh_keys_v1":                        resourceDedicatedSSHKeysV1(),
 			"selectel_vpc_license_v2":                               resourceVPCLicenseV2(),
 			"selectel_vpc_project_v2":                               resourceVPCProjectV2(),
 			"selectel_vpc_subnet_v2":                                resourceVPCSubnetV2(),
@@ -207,6 +211,7 @@ func Provider(providerVersion string) *schema.Provider {
 			"selectel_global_router_static_route_v1":                resourceGlobalRouterStaticRouteV1(),
 			"selectel_private_dns_service_v1":                       resourcePrivateDNSServiceV1(),
 			"selectel_private_dns_zone_v1":                          resourcePrivateDNSZoneV1(),
+			"selectel_dedicated_private_subnet_v1":                  resourceDedicatedPrivateSubnetV1(),
 		},
 	}
 

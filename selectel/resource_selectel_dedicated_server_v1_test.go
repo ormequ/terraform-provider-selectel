@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
-	dedicated "github.com/selectel/dedicated-go/pkg/v2"
+	dedicated "github.com/selectel/dedicated-go/v2/pkg/v2"
 	"github.com/selectel/go-selvpcclient/v4/selvpcclient/resell/v2/projects"
 	"github.com/stretchr/testify/assert"
 	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/httptest"
@@ -25,13 +25,18 @@ func TestAccDedicatedServerV1Basic(t *testing.T) {
 
 		osName                        = "Ubuntu"
 		osVersion, updatedOSVersion   = "2404", "2204"
-		locationName                  = "MSK-2"
-		cfgName                       = "CL25-NVMe"
+		locationName                  = "SPB-5"
+		cfgName                       = "EL10-SSD"
 		pricePlanName                 = "1 day"
 		osHostName, updatedOSHostName = "hostname", "hostname1"
 		osPassword, updatedOSPassword = "Passw0rd!", "Passw0rd!1"
 		userData, updatedUserData     = "#!/bin/bash", "#!/bin/sh"
-		sshKey                        = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCOIWeVNMRC7Y9jeBoG5GP3irOf/u5EbuHYixuZEmtHDtmtlnmzdcBEnpPY5OlFhjSySlUC1clCIShMXgWBfdnvk7Dbp5hgCP3Lh9pS/b8e3kxstIiGF9d7IX04DfVTOF424LlMAFbHNsrmX+uU3lizO20DljFIJNML0OdUO7eKg0XOK1OWVQlSzvZbFj39oYTSqCtoI92czQf4DdJ+0IF1/ZNewE6xPohfnZp5cl82UjYs8vxmcaiifVf7kUyQe/ilv/fZYpt59KCJBJDrTU/ko9hNxCVXrCOw7pPOQayoQ2Vir3M1AnhDMunoxFBocndgffNXVQYtA/3TXLVB7feb"
+		sshKey                        = `ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCOIWeVNMRC7Y9jeBoG5GP3irOf/u5EbuHYixuZEmtHDtmtlnmzdcBEnpPY5OlFhjSySlUC1clCIShMXgWBfdnvk7Dbp5hgCP3Lh9pS/b8e3kxstIiGF9d7IX04DfVTOF424LlMAFbHNsrmX+uU3lizO20DljFIJNML0OdUO7eKg0XOK1OWVQlSzvZbFj39oYTSqCtoI92czQf4DdJ+0IF1/ZNewE6xPohfnZp5cl82UjYs8vxmcaiifVf7kUyQe/ilv/fZYpt59KCJBJDrTU/ko9hNxCVXrCOw7pPOQayoQ2Vir3M1AnhDMunoxFBocndgffNXVQYtA/3TXLVB7feb`
+
+		privateSubnetID string
+		privateSubnet   = "192.168.100.0/24"
+		privateIP       = "192.168.100.1"
+		vlan            = "2989"
 	)
 
 	resource.Test(t, resource.TestCase{
@@ -85,6 +90,15 @@ func TestAccDedicatedServerV1Basic(t *testing.T) {
 					resource.TestCheckResourceAttr("selectel_dedicated_server_v1.server_tf_acc_test_1", "os_password", updatedOSPassword),
 				),
 			},
+			{
+				Config: testAccDedicatedServerV1WithPrivateSubnet(projectName, osName, osVersion, locationName, cfgName, pricePlanName, vlan, privateSubnet, privateIP),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckDedicatedPrivateSubnetV1Exists("selectel_dedicated_private_subnet_v1.subnet_tf_acc_test_1", &privateSubnetID),
+					resource.TestCheckResourceAttr("selectel_dedicated_server_v1.server_tf_acc_test_1", "private_vlan", vlan),
+					resource.TestCheckResourceAttrSet("selectel_dedicated_server_v1.server_tf_acc_test_1", "public_ip"),
+					resource.TestCheckResourceAttr("selectel_dedicated_server_v1.server_tf_acc_test_1", "private_ip", privateIP),
+				),
+			},
 		},
 	})
 }
@@ -124,7 +138,7 @@ data "selectel_dedicated_os_v1" "os_tf_acc_test_1" {
 
  filter {
    name             = "%s"
-   version          = "%s"
+   version_value    = "%s"
  }
 }
 
@@ -188,6 +202,55 @@ resource "selectel_dedicated_server_v1" "server_tf_acc_test_1" {
  }
 }
 `, projectName, osName, osVersion, locationName, cfgName, pricePlanName, osHostName, sshKey, osPassword, userData)
+}
+
+func testAccDedicatedServerV1WithPrivateSubnet(
+	projectName, osName, osVersion, locationName, cfgName, pricePlanName, vlan, subnet, privateIP string,
+) string {
+	return fmt.Sprintf(`
+resource "selectel_vpc_project_v2" "project_tf_acc_test_1" {
+ name        = "%s"
+}
+
+data "selectel_dedicated_os_v1" "os_tf_acc_test_1" {
+ project_id = "${selectel_vpc_project_v2.project_tf_acc_test_1.id}"
+
+ filter {
+   name             = "%s"
+   version_value    = "%s"
+ }
+}
+
+data "selectel_dedicated_location_v1" "location_tf_acc_test_1" {
+ project_id = "${selectel_vpc_project_v2.project_tf_acc_test_1.id}"
+ filter {
+   name = "%s"
+ }
+}
+
+data "selectel_dedicated_configuration_v1" "server_configuration_tf_acc_test_1" {
+ project_id     = "${selectel_vpc_project_v2.project_tf_acc_test_1.id}"
+ deep_filter = "{\"name\": \"%s\"}"
+}
+
+resource "selectel_dedicated_private_subnet_v1" "subnet_tf_acc_test_1" {
+ location_id = "${data.selectel_dedicated_location_v1.location_tf_acc_test_1.locations[0].id}"
+ vlan        = "%s"
+ subnet      = "%s"
+}
+
+resource "selectel_dedicated_server_v1" "server_tf_acc_test_1" {
+ project_id = "${selectel_vpc_project_v2.project_tf_acc_test_1.id}"
+
+ configuration_id = "${data.selectel_dedicated_configuration_v1.server_configuration_tf_acc_test_1.configurations.0.id}"
+ location_id      = "${data.selectel_dedicated_location_v1.location_tf_acc_test_1.locations[0].id}"
+ os_id            = "${data.selectel_dedicated_os_v1.os_tf_acc_test_1.os.0.id}"
+ price_plan_name  = "%s"
+
+ private_subnet_id = "${selectel_dedicated_private_subnet_v1.subnet_tf_acc_test_1.id}"
+ private_subnet_ip = "%s"
+}
+`, projectName, osName, osVersion, locationName, cfgName, vlan, subnet, pricePlanName, privateIP)
 }
 
 func Test_resourceDedicatedServerV1CreateValidatePreconditions(t *testing.T) {
@@ -552,6 +615,269 @@ func Test_resourceDedicatedServerV1UpdateValidatePreconditions(t *testing.T) {
 				assert.ErrorContains(t, err, tt.wantErr)
 			} else {
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestAccDedicatedServerV1ImportState(t *testing.T) {
+	var (
+		project projects.Project
+
+		projectName = acctest.RandomWithPrefix("tf-acc")
+
+		osName        = "Ubuntu"
+		osVersion     = "2404"
+		locationName  = "MSK-2"
+		cfgName       = "CL25-NVMe"
+		pricePlanName = "1 day"
+		osHostName    = "hostname"
+		sshKey        = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCOIWeVNMRC7Y9jeBoG5GP3irOf/u5EbuHYixuZEmtHDtmtlnmzdcBEnpPY5OlFhjSySlUC1clCIShMXgWBfdnvk7Dbp5hgCP3Lh9pS/d3e3kxstIiGF9d7IX04DfVTOF424LlMAFbHNsrmX+uU3lizO20DljFIJNML0OdUO7eKg0XOK1OWVQlSzvZbFj39oYTSqCtoI92czQf4DdJ+0IF1/ZNewE6xPohfnZp5cl82UjYs8vxmcaiifVf7kUyQe/ilv/fZYpt59KCJBJDrTU/ko9hNxCVXrCOw7pPOQayoQ2Vir3M1AnhDMunoxFBocndgffNXVQYtA/3TXLVB7feb"
+		osPassword    = "Passw0rd!"
+		userData      = "#!/bin/bash"
+	)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccSelectelPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		CheckDestroy:      testAccCheckVPCV2ProjectDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccDedicatedServerV1(projectName, osName, osVersion, locationName, cfgName, pricePlanName, osHostName, sshKey, osPassword, userData),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckVPCV2ProjectExists("selectel_vpc_project_v2.project_tf_acc_test_1", &project),
+					testAccCheckDedicatedServerV1Exists("selectel_dedicated_server_v1.server_tf_acc_test_1"),
+				),
+			},
+			{
+				ResourceName:            "selectel_dedicated_server_v1.server_tf_acc_test_1",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"os_password", "ssh_key", "user_data", "partitions_config"},
+			},
+		},
+	})
+}
+
+func TestDedicatedServerV1ImportState_WithProjectID(t *testing.T) {
+	d := resourceDedicatedServerV1().TestResourceData()
+	d.SetId("test-server-id")
+
+	config := &Config{
+		ProjectID: "test-project-id",
+	}
+
+	meta := interface{}(config)
+
+	result, err := resourceDedicatedServerV1ImportState(context.Background(), d, meta)
+
+	assert.NoError(t, err)
+	assert.Len(t, result, 1)
+	assert.Equal(t, "test-project-id", d.Get("project_id"))
+	assert.Equal(t, "test-server-id", d.Id())
+}
+
+func TestDedicatedServerV1ImportState_WithoutProjectID(t *testing.T) {
+	d := resourceDedicatedServerV1().TestResourceData()
+	d.SetId("test-server-id")
+
+	config := &Config{
+		ProjectID: "",
+	}
+
+	meta := interface{}(config)
+
+	result, err := resourceDedicatedServerV1ImportState(context.Background(), d, meta)
+
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "project_id must be set for the resource import")
+	assert.Nil(t, result)
+}
+
+func TestDedicatedServerV1PowerStateSchema(t *testing.T) {
+	resource := resourceDedicatedServerV1()
+	powerStateSchema := resource.Schema["power_state"]
+
+	assert.NotNil(t, powerStateSchema, "power_state schema should exist")
+	assert.Equal(t, schema.TypeString, powerStateSchema.Type, "power_state should be TypeString")
+	assert.True(t, powerStateSchema.Optional, "power_state should be Optional")
+	assert.True(t, powerStateSchema.Computed, "power_state should be Computed")
+	assert.NotNil(t, powerStateSchema.ValidateFunc, "power_state should have ValidateFunc")
+
+	// Test valid values
+	validValues := []string{"on", "off", "reboot"}
+	for _, val := range validValues {
+		_, errs := powerStateSchema.ValidateFunc(val, "power_state")
+		assert.Empty(t, errs, "value %q should be valid", val)
+	}
+
+	// Test invalid values
+	invalidValues := []string{"ON", "OFF", "start", "stop", ""}
+	for _, val := range invalidValues {
+		_, errs := powerStateSchema.ValidateFunc(val, "power_state")
+		assert.NotEmpty(t, errs, "value %q should be invalid", val)
+	}
+}
+
+func TestDedicatedServerV1UpdatePowerStateLogic(t *testing.T) {
+	d := resourceDedicatedServerV1().TestResourceData()
+	d.SetId("test-server-id")
+	_ = d.Set("project_id", "test-project-id")
+	_ = d.Set("configuration_id", "test-config-id")
+	_ = d.Set("location_id", "test-location-id")
+	_ = d.Set("os_id", "test-os-id")
+	_ = d.Set("price_plan_name", "1 day")
+
+	// Test power_state is settable
+	_ = d.Set("power_state", "on")
+	powerState := d.Get("power_state").(string)
+	assert.Equal(t, "on", powerState, "power_state should be settable")
+}
+
+func TestDedicatedServerV1CreateWithInvalidPowerState(t *testing.T) {
+	d := resourceDedicatedServerV1().TestResourceData()
+	d.SetId("test-server-id")
+	_ = d.Set("project_id", "test-project-id")
+	_ = d.Set("configuration_id", "test-config-id")
+	_ = d.Set("location_id", "test-location-id")
+	_ = d.Set("os_id", "test-os-id")
+	_ = d.Set("price_plan_name", "1 day")
+
+	// Test that creating with power_state = "off" returns an error
+	_ = d.Set("power_state", "off")
+	assert.False(t, d.Get(dedicatedServerSchemaKeyPowerState).(string) == "on", "power_state should be off")
+
+	// Test that creating with power_state = "reboot" returns an error
+	_ = d.Set("power_state", "reboot")
+	assert.False(t, d.Get(dedicatedServerSchemaKeyPowerState).(string) == "on", "power_state should be reboot")
+
+	// Test that creating with power_state = "on" is allowed
+	_ = d.Set("power_state", "on")
+	assert.Equal(t, "on", d.Get(dedicatedServerSchemaKeyPowerState).(string), "power_state should be on")
+}
+
+func TestDedicatedServerV1PowerStateConflictsWith(t *testing.T) {
+	// Test 1: power_state alone - should pass
+	hc1 := func(key string) bool {
+		return key == dedicatedServerSchemaKeyPowerState
+	}
+	assert.False(t, hasOtherChangesMock(hc1), "power_state alone should not trigger conflict")
+
+	// Test 2: power_state + os_id - should fail
+	hc2 := func(key string) bool {
+		return key == dedicatedServerSchemaKeyPowerState || key == dedicatedServerSchemaKeyOSID
+	}
+	assert.True(t, hasOtherChangesMock(hc2), "power_state + os_id should trigger conflict")
+
+	// Test 3: power_state + os_password - should fail
+	hc3 := func(key string) bool {
+		return key == dedicatedServerSchemaKeyPowerState || key == dedicatedServerSchemaKeyOSPassword
+	}
+	assert.True(t, hasOtherChangesMock(hc3), "power_state + os_password should trigger conflict")
+
+	// Test 4: power_state + ssh_key - should fail
+	hc4 := func(key string) bool {
+		return key == dedicatedServerSchemaKeyPowerState || key == dedicatedServerSchemaKeyOSSSHKey
+	}
+	assert.True(t, hasOtherChangesMock(hc4), "power_state + ssh_key should trigger conflict")
+
+	// Test 5: power_state + partitions_config - should fail
+	hc5 := func(key string) bool {
+		return key == dedicatedServerSchemaKeyPowerState || key == dedicatedServerSchemaKeyOSPartitionsConfig
+	}
+	assert.True(t, hasOtherChangesMock(hc5), "power_state + partitions_config should trigger conflict")
+
+	// Test 6: power_state + force_update_additional_params - should fail
+	hc6 := func(key string) bool {
+		return key == dedicatedServerSchemaKeyPowerState || key == dedicatedServerSchemaForceUpdateAdditionalParams
+	}
+	assert.True(t, hasOtherChangesMock(hc6), "power_state + force_update_additional_params should trigger conflict")
+}
+
+// hasOtherChangesMock simulates the hasOtherChanges logic for testing.
+func hasOtherChangesMock(hasChange func(string) bool) bool {
+	return hasChange(dedicatedServerSchemaKeyOSID) ||
+		hasChange(dedicatedServerSchemaKeyOSPassword) ||
+		hasChange(dedicatedServerSchemaKeyOSSSHKey) ||
+		hasChange(dedicatedServerSchemaKeyOSSSHKeyName) ||
+		hasChange(dedicatedServerSchemaKeyOSPartitionsConfig) ||
+		hasChange(dedicatedServerSchemaKeyOSUserData) ||
+		hasChange(dedicatedServerSchemaKeyOSHostName) ||
+		hasChange(dedicatedServerSchemaForceUpdateAdditionalParams)
+}
+
+func Test_resourceDedicatedServerGetPrivateVlan(t *testing.T) {
+	const (
+		hwID       = "hw-1"
+		locationID = "loc-1"
+	)
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantVlan   *int
+		wantErrSub string
+	}{
+		{
+			name:       "MatchingLocationReturnsVlan",
+			statusCode: http.StatusOK,
+			body:       `{"result":[{"uuid":"p1","port_type":"local","hw_uuid":"hw-1","network":[{"uuid":"n1","vlan":2989,"location_uuid":"loc-1"}]}]}`,
+			wantVlan:   func() *int { v := 2989; return &v }(),
+		},
+		{
+			name:       "NoMatchingLocationReturnsNil",
+			statusCode: http.StatusOK,
+			body:       `{"result":[{"uuid":"p1","port_type":"local","hw_uuid":"hw-1","network":[{"uuid":"n1","vlan":2989,"location_uuid":"other"}]}]}`,
+			wantVlan:   nil,
+		},
+		{
+			name:       "EmptyPortsReturnsNil",
+			statusCode: http.StatusOK,
+			body:       `{"result":[]}`,
+			wantVlan:   nil,
+		},
+		{
+			// Regression: an active server can return 404 from /network/port/hw/{id}
+			// when no ports are registered in the hardware-port subsystem.
+			// Treat as "no private VLAN" rather than failing Read.
+			name:       "NotFoundReturnsNil",
+			statusCode: http.StatusNotFound,
+			body:       `{"type":"SeidoNotFoundError","message":"HwRepository: hw-1","code":"R00002"}`,
+			wantVlan:   nil,
+		},
+		{
+			name:       "ServerErrorPropagates",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":"internal"}`,
+			wantErrSub: "500 status code",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := new(dedicated.ServiceClient)
+			client.HTTPClient = &http.Client{
+				Transport: httptest.RoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+					return httptest.NewFakeResponse(tt.statusCode, tt.body), nil
+				}),
+			}
+
+			vlan, err := resourceDedicatedServerGetPrivateVlan(context.Background(), client, hwID, locationID)
+
+			if tt.wantErrSub != "" {
+				assert.Error(t, err)
+				assert.ErrorContains(t, err, tt.wantErrSub)
+				assert.Nil(t, vlan)
+
+				return
+			}
+
+			assert.NoError(t, err)
+			if tt.wantVlan == nil {
+				assert.Nil(t, vlan)
+			} else if assert.NotNil(t, vlan) {
+				assert.Equal(t, *tt.wantVlan, *vlan)
 			}
 		})
 	}

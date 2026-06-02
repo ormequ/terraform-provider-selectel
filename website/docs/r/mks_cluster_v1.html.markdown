@@ -96,8 +96,6 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
 
 * `cni_cilium_settings` - (Optional) Settings for the Cilium CNI. Changing this creates a new cluster. Can be set only when `cni_type` is `CILIUM`.
 
-  The block supports the following arguments:
-
   * `envoy_daemonset` - (Optional) Enables [Envoy DaemonSet for Cilium CNI](https://docs.cilium.io/en/latest/security/network/proxy/envoy/#envoy). Boolean flag. The default value is `true`.
   * `hubble_relay` - (Optional) Enables [Hubble Relay for Cilium CNI](https://docs.cilium.io/en/stable/internals/hubble/#hubble-relay). Boolean flag. The default value is `true`.
 
@@ -110,8 +108,6 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
   * `true` - Audit logs are collected and available for export.
 
 * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection).
-
-  The block supports the following arguments:
 
   * `enabled` - (Required) Enables or disables authentication with OpenID Connect in the cluster.
 

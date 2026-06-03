@@ -1,6 +1,6 @@
 module github.com/terraform-providers/terraform-provider-selectel
 
-go 1.25.0
+go 1.25.11
 
 require (
 	github.com/hashicorp/go-retryablehttp v0.7.7
@@ -66,7 +66,7 @@ require (
 	github.com/vmihailenco/msgpack/v4 v4.3.12 // indirect
 	github.com/vmihailenco/tagparser v0.1.2 // indirect
 	github.com/zclconf/go-cty v1.12.1 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect

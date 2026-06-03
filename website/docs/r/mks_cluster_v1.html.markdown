@@ -37,7 +37,7 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
   region                            = "ru-7"
   kube_version                      = data.selectel_mks_kube_versions_v1.versions.latest_version
   cni_type                          = "CALICO"
-  zonal                             = true
+  cluster_type                      = "BASIC"
   enable_patch_version_auto_upgrade = false
 }
 ```
@@ -56,33 +56,23 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
 
   To upgrade a minor version, the desired version should match the next available minor release with the latest patch version.
 
-* `zonal` - (Optional, **Deprecated**, use `cluster_type` instead) Specifies a cluster type. Changing this creates a new cluster.
+* `zonal` - (Deprecated) Remove this argument as it is no longer in use and will be removed in the next major version of the provider. To manage a cluster type, use a `cluster_type` argument.
 
-  Boolean flag:
+* `cluster_type` - (Optional) Cluster type. Changing this creates a new cluster.
 
-  * `false` (default) - for a high availability cluster with three master nodes located on different hosts in one pool segment.
-
-  * `true` - for a basic cluster with one master node. Set `enable_patch_version_auto_upgrade` to `false`.
-
-  Learn more about [Cluster types](https://docs.selectel.ru/en/cloud/managed-kubernetes/about/about-managed-kubernetes/#cluster-types).
-
-* `cluster_type` - (Optional) The type of the cluster. Changing this creates a new cluster.
-
-  Supported values:
+  Available values are the following:
   
   * `BASIC` - for a basic cluster with one master node.
   
-  * `HIGH_AVAILABILITY` (default) - for a high availability cluster with three master nodes located on different hosts in one pool segment.
+  * `HIGH_AVAILABILITY` (default) - for a high availability cluster with three master nodes located in one availability zone.
   
-  * `HIGH_AVAILABILITY_MULTI_AZ` - for a high availability cluster with three master nodes distributed across three pool segments.
+  * `HIGH_AVAILABILITY_MULTI_AZ` - for a high availability cluster with three master nodes located in three availability zones.
 
   Learn more about [Cluster types](https://docs.selectel.ru/en/cloud/managed-kubernetes/about/about-managed-kubernetes/#cluster-types).
   
-  If both `zonal` and `cluster_type` are not specified, `HIGH_AVAILABILITY` is used by default. If `zonal` is set to `true`, `BASIC` is used. If `cluster_type` is explicitly set, it takes precedence over `zonal`.
-
 * `enable_autorepair` - (Optional) Enables or disables node auto-repairing (worker nodes are automatically restarted). Auto-repairing is not available if you have one worker node. After auto-repairing, all data on the boot volumes are deleted. Boolean flag, the default value is `true`. Learn more about [Nodes auto-repairing](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/reinstall-nodes/).
 
-* `enable_patch_version_auto_upgrade` - (Optional) Enables or disables auto-upgrading of the cluster to the latest available Kubernetes patch version during the maintenance window. Boolean flag, the default value is `true`. Must be set to false for basic clusters (if `zonal` is `true`).  Learn more about [Patch versions auto-upgrading](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/upgrade-version/).
+* `enable_patch_version_auto_upgrade` - (Optional) Enables or disables auto-upgrading of the cluster to the latest available Kubernetes patch version during the maintenance window. Boolean flag, the default value is `true`. Must be set to `false` for basic clusters when `cluster_type` is `BASIC`. Learn more about [Patch versions auto-upgrading](https://docs.selectel.ru/en/managed-kubernetes/clusters/upgrade-version/#update-patch-release).
 
 * `network_id` - (Optional) Unique identifier of the associated OpenStack network. Changing this creates a new cluster. Learn more about the [openstack_networking_network_v2](https://registry.terraform.io/providers/terraform-provider-openstack/openstack/latest/docs/resources/networking_network_v2) resource in the official OpenStack documentation.
 
@@ -106,8 +96,6 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
 
 * `cni_cilium_settings` - (Optional) Settings for the Cilium CNI. Changing this creates a new cluster. Can be set only when `cni_type` is `CILIUM`.
 
-  The block supports the following arguments:
-
   * `envoy_daemonset` - (Optional) Enables [Envoy DaemonSet for Cilium CNI](https://docs.cilium.io/en/latest/security/network/proxy/envoy/#envoy). Boolean flag. The default value is `true`.
   * `hubble_relay` - (Optional) Enables [Hubble Relay for Cilium CNI](https://docs.cilium.io/en/stable/internals/hubble/#hubble-relay). Boolean flag. The default value is `true`.
 
@@ -120,8 +108,6 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
   * `true` - Audit logs are collected and available for export.
 
 * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection).
-
-  The block supports the following arguments:
 
   * `enabled` - (Required) Enables or disables authentication with OpenID Connect in the cluster.
 

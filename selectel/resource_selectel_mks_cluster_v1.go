@@ -114,11 +114,11 @@ func resourceMKSClusterV1() *schema.Resource {
 				ForceNew: false,
 			},
 			"zonal": {
-				Type:        schema.TypeBool,
-				Optional:    true,
-				Default:     false,
-				ForceNew:    true,
-				Description: "(Deprecated) Use cluster_type instead. This field will be removed in a future version.",
+				Type:       schema.TypeBool,
+				Optional:   true,
+				Default:    false,
+				ForceNew:   true,
+				Deprecated: "Use cluster_type instead. This field will be removed in a future version.",
 			},
 			"cluster_type": {
 				Type:     schema.TypeString,

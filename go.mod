@@ -1,6 +1,6 @@
 module github.com/terraform-providers/terraform-provider-selectel
 
-go 1.25.11
+go 1.25.0
 
 require (
 	github.com/hashicorp/go-retryablehttp v0.7.7

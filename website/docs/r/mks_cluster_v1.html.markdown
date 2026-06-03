@@ -72,7 +72,7 @@ resource "selectel_mks_cluster_v1" "basic_cluster" {
   
 * `enable_autorepair` - (Optional) Enables or disables node auto-repairing (worker nodes are automatically restarted). Auto-repairing is not available if you have one worker node. After auto-repairing, all data on the boot volumes are deleted. Boolean flag, the default value is `true`. Learn more about [Nodes auto-repairing](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/reinstall-nodes/).
 
-* `enable_patch_version_auto_upgrade` - (Optional) Enables or disables auto-upgrading of the cluster to the latest available Kubernetes patch version during the maintenance window. Boolean flag, the default value is `true`. Must be set to `false` for basic clusters when `cluster_type` is `BASIC`. Learn more about [Patch versions auto-upgrading](/managed-kubernetes/clusters/upgrade-version/).
+* `enable_patch_version_auto_upgrade` - (Optional) Enables or disables auto-upgrading of the cluster to the latest available Kubernetes patch version during the maintenance window. Boolean flag, the default value is `true`. Must be set to `false` for basic clusters when `cluster_type` is `BASIC`. Learn more about [Patch versions auto-upgrading](https://docs.selectel.ru/en/managed-kubernetes/clusters/upgrade-version/#update-patch-release).
 
 * `network_id` - (Optional) Unique identifier of the associated OpenStack network. Changing this creates a new cluster. Learn more about the [openstack_networking_network_v2](https://registry.terraform.io/providers/terraform-provider-openstack/openstack/latest/docs/resources/networking_network_v2) resource in the official OpenStack documentation.
 

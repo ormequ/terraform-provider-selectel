@@ -1,3 +1,13 @@
+## 8.0.2 (June 4, 2026)
+
+BUG FIXES:
+
+* Fix empty `Deprecated` attribute for `zonal` argument in `selectel_mks_cluster_v1` ([#402](https://github.com/selectel/terraform-provider-selectel/pull/402))
+
+IMPROVEMENTS:
+
+* Update documentation for `cluster_type` support and `zonal` deprecation in `selectel_mks_cluster_v1` ([#401](https://github.com/selectel/terraform-provider-selectel/pull/401))
+
 ## 8.0.1 (May 28, 2026)
 
 BUG FIXES:

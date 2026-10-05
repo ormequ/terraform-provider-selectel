@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6/tf6server"
@@ -14,6 +15,14 @@ import (
 )
 
 func main() {
+	// Same log plumbing as SDKv2 plugin.Serve (plugin/serve.go:102-115): go-plugin
+	// passes log levels to Terraform only from an hclog JSON logger.
+	logger := hclog.New(&hclog.LoggerOptions{
+		Level:      hclog.Trace,
+		JSONFormat: true,
+	})
+	log.SetOutput(logger.StandardWriter(&hclog.StandardLoggerOptions{InferLevels: true}))
+
 	ctx := context.Background()
 
 	upgradedSDKProvider, err := tf5to6server.UpgradeServer(ctx, selectel.Provider(version.Version).GRPCProvider)

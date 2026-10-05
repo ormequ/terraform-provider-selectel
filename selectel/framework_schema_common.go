@@ -121,8 +121,10 @@ type describer interface {
 
 func anyRequiresReplace[M describer](ctx context.Context, modifiers []M) bool {
 	for _, m := range modifiers {
-		// Matches RequiresReplace, RequiresReplaceIf with the stock text and
-		// RequiresReplaceIfConfigured of every type-specific planmodifier package.
+		// Detects RequiresReplace and RequiresReplaceIfConfigured of every
+		// type-specific planmodifier package. RequiresReplaceIf takes its
+		// description as an argument, so it is missed unless that description
+		// repeats the stock text.
 		if strings.Contains(m.Description(ctx), "Terraform will destroy and recreate the resource") {
 			return true
 		}

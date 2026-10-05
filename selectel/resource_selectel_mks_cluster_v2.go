@@ -168,6 +168,25 @@ func (r *mksClusterV2Resource) MoveState(_ context.Context) []resource.StateMove
 	return []resource.StateMover{{StateMover: moveFromMKSClusterV1}}
 }
 
+// SDKv2 stores an unset optional string as "". Moved into the framework schema,
+// such a value becomes the attribute's Default when it has one and null when it
+// is Optional without a Default; Required attributes keep the value as is.
+func emptyStringToDefault(v, def string) types.String {
+	if v == "" {
+		return types.StringValue(def)
+	}
+
+	return types.StringValue(v)
+}
+
+func emptyStringToNull(v string) types.String {
+	if v == "" {
+		return types.StringNull()
+	}
+
+	return types.StringValue(v)
+}
+
 func moveFromMKSClusterV1(ctx context.Context, req resource.MoveStateRequest, resp *resource.MoveStateResponse) {
 	if req.SourceTypeName != "selectel_mks_cluster_v1" || req.SourceSchemaVersion != 0 ||
 		!strings.HasSuffix(req.SourceProviderAddress, "selectel/selectel") {
@@ -186,8 +205,8 @@ func moveFromMKSClusterV1(ctx context.Context, req resource.MoveStateRequest, re
 		var diags diag.Diagnostics
 		oidc, diags = types.ObjectValue(mksClusterV2OIDCAttrTypes, map[string]attr.Value{
 			"enabled":        types.BoolValue(src.OIDC[0].Enabled),
-			"issuer_url":     types.StringValue(src.OIDC[0].IssuerURL),
-			"username_claim": types.StringValue(src.OIDC[0].UsernameClaim),
+			"issuer_url":     emptyStringToNull(src.OIDC[0].IssuerURL),
+			"username_claim": emptyStringToDefault(src.OIDC[0].UsernameClaim, "sub"),
 		})
 		resp.Diagnostics.Append(diags...)
 	}
@@ -199,7 +218,7 @@ func moveFromMKSClusterV1(ctx context.Context, req resource.MoveStateRequest, re
 		Name:                   types.StringValue(src.Name),
 		KubeVersion:            types.StringValue(src.KubeVersion),
 		EnableAutorepair:       types.BoolValue(src.EnableAutorepair),
-		MaintenanceWindowStart: types.StringValue(src.MaintenanceWindowStart),
+		MaintenanceWindowStart: emptyStringToDefault(src.MaintenanceWindowStart, ""),
 		OIDC:                   oidc,
 	})...)
 

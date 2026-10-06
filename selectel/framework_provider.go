@@ -17,9 +17,6 @@ import (
 	"github.com/terraform-providers/terraform-provider-selectel/version"
 )
 
-// frameworkProvider serves the terraform-plugin-framework resources muxed
-// next to the SDKv2 provider. Its schema and Config both come from the SDKv2
-// provider, because tf6muxserver requires identical provider schemas.
 type frameworkProvider struct {
 	sdk     *sdkschema.Provider
 	version string
@@ -27,8 +24,6 @@ type frameworkProvider struct {
 
 var _ provider.Provider = &frameworkProvider{}
 
-// ProviderServer returns the provider served by main.go: the SDKv2 provider,
-// upgraded to protocol 6, muxed with the framework provider.
 func ProviderServer(ctx context.Context, providerVersion string) (func() tfprotov6.ProviderServer, error) {
 	sdk := Provider(providerVersion)
 
@@ -57,9 +52,8 @@ func (p *frameworkProvider) Metadata(_ context.Context, _ provider.MetadataReque
 	resp.Version = p.version
 }
 
-// Schema mirrors the SDKv2 provider schema. Every SDKv2 provider attribute is
-// a string. SDKv2 reports Required + EnvDefaultFunc as optional while the
-// variable is set (helper/schema/core_schema.go), so the same rule applies here.
+// Schema copies the SDKv2 provider schema, which tf6muxserver requires. SDKv2
+// reports Required + EnvDefaultFunc as optional while the variable is set.
 func (p *frameworkProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	attrs := make(map[string]providerschema.Attribute, len(p.sdk.Schema))
 	for name, s := range p.sdk.Schema {
@@ -74,9 +68,6 @@ func (p *frameworkProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 	resp.Schema = providerschema.Schema{Attributes: attrs}
 }
 
-// Configure shares the process-wide Config with the SDKv2 provider through
-// newConfig. tf6muxserver configures the SDKv2 provider first, so in practice
-// this side gets the Config the SDKv2 side has already built.
 func (p *frameworkProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
 	config := newConfig(p.sdk.UserAgent(version.ProviderName, p.version), func(key string) string {
 		var v types.String
@@ -103,7 +94,6 @@ func (p *frameworkProvider) DataSources(_ context.Context) []func() datasource.D
 	return nil
 }
 
-// sdkDefault returns what the attribute's EnvDefaultFunc resolves to now.
 func sdkDefault(s *sdkschema.Schema) string {
 	v, _ := s.DefaultValue()
 	str, _ := v.(string)

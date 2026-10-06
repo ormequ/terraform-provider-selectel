@@ -11,8 +11,7 @@ import (
 )
 
 func main() {
-	// The same log setup as SDKv2 plugin.Serve: go-plugin forwards log levels
-	// to Terraform only from an hclog JSON logger.
+	// As in SDKv2 plugin.Serve: log levels reach Terraform only via hclog JSON.
 	logger := hclog.New(&hclog.LoggerOptions{
 		Level:      hclog.Trace,
 		JSONFormat: true,

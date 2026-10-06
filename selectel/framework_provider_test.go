@@ -14,8 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testAccProtoV6ProviderFactories runs the provider through the same mux as
-// main.go, with the selectel_mux_test data source added to the framework side.
 var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
 	"selectel": func() (tfprotov6.ProviderServer, error) {
 		sdk := Provider("test")
@@ -39,8 +37,6 @@ func (p testFrameworkProvider) DataSources(ctx context.Context) []func() datasou
 	})
 }
 
-// muxTestDataSource reports the username from the Config the framework side
-// received, which proves the two providers share it.
 type muxTestDataSource struct {
 	config *Config
 }
@@ -74,8 +70,6 @@ func (d *muxTestDataSource) Read(ctx context.Context, _ datasource.ReadRequest, 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("username"), d.config.Username)...)
 }
 
-// setTestProviderEnv fills the provider credentials a unit test needs, keeping
-// whatever an acceptance run has already set.
 func setTestProviderEnv(t *testing.T) {
 	t.Helper()
 
@@ -113,8 +107,6 @@ func TestProviderServerSchema(t *testing.T) {
 			server, err := testAccProtoV6ProviderFactories["selectel"]()
 			require.NoError(t, err)
 
-			// tf6muxserver reports a provider schema mismatch between the two
-			// servers as an error diagnostic here.
 			resp, err := server.GetProviderSchema(context.Background(), &tfprotov6.GetProviderSchemaRequest{})
 			require.NoError(t, err)
 			assert.Empty(t, resp.Diagnostics)

@@ -37,9 +37,7 @@ func getConfig(d *schema.ResourceData, userAgent string) (*Config, diag.Diagnost
 	return newConfig(userAgent, func(key string) string { return d.Get(key).(string) }), nil
 }
 
-// newConfig builds the Config once per process from the provider attributes
-// that attr returns. The SDKv2 and the framework provider both call it, so
-// they share one Config and its clients cache.
+// newConfig is shared by the SDKv2 and the framework provider.
 func newConfig(userAgent string, attr func(key string) string) *Config {
 	once.Do(func() {
 		cfgSingletone = &Config{

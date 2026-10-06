@@ -54,8 +54,6 @@ func TestWithFrameworkDocsHints(t *testing.T) {
 		s["nested"].(schema.SingleNestedAttribute).Attributes["inner"].GetDescription())
 }
 
-// The framework helpers must render the same descriptions as their SDKv2
-// counterparts, so _v1 and _v2 resources read alike in the docs.
 func TestFrameworkHelpersMatchSDKv2(t *testing.T) {
 	docs := resourceDocs{Name: "public port"}
 	hint := "Copy it from the card."

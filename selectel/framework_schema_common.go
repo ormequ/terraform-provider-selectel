@@ -12,10 +12,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 )
 
-// Framework counterparts of schema_common.go. They share resourceDocs and the
-// description constants with the SDKv2 helpers, so both kinds of resources
-// render the same phrases.
-
 func (r resourceDocs) idResourceAttribute() schema.StringAttribute {
 	return schema.StringAttribute{
 		Computed:      true,
@@ -61,11 +57,6 @@ func projectIDIdentityAttribute() identityschema.StringAttribute {
 	}
 }
 
-// withFrameworkDocsHints is the framework version of withDocsHints. The
-// framework has no ForceNew flag and no plain Default value, so the walker
-// recognises RequiresReplace by its plan modifier description and reads the
-// default by calling the Default implementation. Every attribute type it
-// should annotate needs its own case.
 func (r resourceDocs) withFrameworkDocsHints(attrs map[string]schema.Attribute) map[string]schema.Attribute {
 	ctx := context.Background()
 	replaceHint := fmt.Sprintf(" Changing this creates a new %s.", r.Name)
@@ -114,17 +105,14 @@ func (r resourceDocs) withFrameworkDocsHints(attrs map[string]schema.Attribute) 
 	return attrs
 }
 
-// describer is the Description method every framework plan modifier has.
 type describer interface {
 	Description(ctx context.Context) string
 }
 
 func anyRequiresReplace[M describer](ctx context.Context, modifiers []M) bool {
 	for _, m := range modifiers {
-		// Detects RequiresReplace and RequiresReplaceIfConfigured of every
-		// type-specific planmodifier package. RequiresReplaceIf takes its
-		// description as an argument, so it is missed unless that description
-		// repeats the stock text.
+		// The framework has no ForceNew flag; RequiresReplace is recognised by
+		// its stock description, so a custom RequiresReplaceIf text is missed.
 		if strings.Contains(m.Description(ctx), "Terraform will destroy and recreate the resource") {
 			return true
 		}

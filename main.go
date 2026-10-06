@@ -1,16 +1,31 @@
 package main
 
 import (
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
+	"context"
+	"log"
+
+	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6/tf6server"
 	"github.com/terraform-providers/terraform-provider-selectel/selectel"
 	"github.com/terraform-providers/terraform-provider-selectel/version"
 )
 
 func main() {
-	plugin.Serve(&plugin.ServeOpts{
-		ProviderFunc: func() *schema.Provider {
-			return selectel.Provider(version.Version)
-		},
+	// The same log setup as SDKv2 plugin.Serve: go-plugin forwards log levels
+	// to Terraform only from an hclog JSON logger.
+	logger := hclog.New(&hclog.LoggerOptions{
+		Level:      hclog.Trace,
+		JSONFormat: true,
 	})
+	log.SetOutput(logger.StandardWriter(&hclog.StandardLoggerOptions{InferLevels: true}))
+
+	providerServer, err := selectel.ProviderServer(context.Background(), version.Version)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = tf6server.Serve("registry.terraform.io/selectel/selectel", providerServer)
+	if err != nil {
+		log.Fatal(err)
+	}
 }

@@ -17,6 +17,8 @@ import (
 	"github.com/terraform-providers/terraform-provider-selectel/version"
 )
 
+// frameworkProvider serves the terraform-plugin-framework resources next to
+// the SDKv2 provider.
 type frameworkProvider struct {
 	sdk     *sdkschema.Provider
 	version string
@@ -24,6 +26,8 @@ type frameworkProvider struct {
 
 var _ provider.Provider = &frameworkProvider{}
 
+// ProviderServer returns the SDKv2 provider, upgraded to protocol 6, muxed
+// with the framework provider.
 func ProviderServer(ctx context.Context, providerVersion string) (func() tfprotov6.ProviderServer, error) {
 	sdk := Provider(providerVersion)
 
@@ -52,8 +56,9 @@ func (p *frameworkProvider) Metadata(_ context.Context, _ provider.MetadataReque
 	resp.Version = p.version
 }
 
-// Schema copies the SDKv2 provider schema, which tf6muxserver requires. SDKv2
-// reports Required + EnvDefaultFunc as optional while the variable is set.
+// Schema copies the SDKv2 provider schema, because tf6muxserver requires the
+// two to be identical. SDKv2 reports Required + EnvDefaultFunc as optional
+// while the variable is set, so the copy does the same.
 func (p *frameworkProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	attrs := make(map[string]providerschema.Attribute, len(p.sdk.Schema))
 	for name, s := range p.sdk.Schema {

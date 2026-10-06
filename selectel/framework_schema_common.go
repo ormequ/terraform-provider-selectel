@@ -57,6 +57,7 @@ func projectIDIdentityAttribute() identityschema.StringAttribute {
 	}
 }
 
+// withFrameworkDocsHints is the framework version of withDocsHints.
 func (r resourceDocs) withFrameworkDocsHints(attrs map[string]schema.Attribute) map[string]schema.Attribute {
 	ctx := context.Background()
 	replaceHint := fmt.Sprintf(" Changing this creates a new %s.", r.Name)

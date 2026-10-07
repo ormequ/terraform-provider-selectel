@@ -243,10 +243,11 @@ func testMKSNodegroupV2MovedState() mksNodegroupV2Model {
 			"volume_gb": types.Int64Value(20), "volume_type": types.StringValue("fast.ru-7a"), "local_volume": types.BoolValue(false),
 			"affinity_policy": types.StringValue("soft-anti-affinity"),
 		}),
-		NodegroupType: types.StringValue("STANDARD"),
-		Status:        types.StringValue("ACTIVE"),
-		Nodes:         types.ListValueMust(nodeType, []attr.Value{node("1"), node("2")}),
-		Timeouts:      timeouts.Value{Object: types.ObjectNull(mksV2TimeoutsAttrTypes)},
+		DedicatedNodegroupConfig: types.ObjectNull(mksNodegroupV2DedicatedConfigAttrTypes),
+		NodegroupType:            types.StringValue("STANDARD"),
+		Status:                   types.StringValue("ACTIVE"),
+		Nodes:                    types.ListValueMust(nodeType, []attr.Value{node("1"), node("2")}),
+		Timeouts:                 timeouts.Value{Object: types.ObjectNull(mksV2TimeoutsAttrTypes)},
 	}
 }
 

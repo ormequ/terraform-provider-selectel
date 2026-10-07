@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
+	dedicated "github.com/selectel/dedicated-go/v2/pkg/v2"
 	"github.com/selectel/mks-go/pkg/v1/kubeoptions"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/cluster"
@@ -139,6 +140,46 @@ func (p *mksV2Provided) client(ctx context.Context, projectIDAttr types.String, 
 	}
 
 	return client, projectID, diags
+}
+
+// mksV2DedicatedURL is the dedicated servers API that selectel_dedicated_server_v1
+// uses too.
+const mksV2DedicatedURL = "https://api.selectel.ru/servers/v2"
+
+// pricePlans lists the dedicated server price plans. The endpoint needs no
+// token (dedicated-go PricePlans sends the request without auth), so it works
+// at plan time without Keystone.
+func (p *mksV2Provided) pricePlans(ctx context.Context) (dedicated.PricePlans, error) {
+	userAgent, url := "", mksV2DedicatedURL
+	if p.config != nil {
+		userAgent = p.config.UserAgent
+		if p.config.dedicatedURL != "" {
+			url = p.config.dedicatedURL
+		}
+	}
+	client := dedicated.NewClientV2("", url, dedicated.WithUserAgent(userAgent))
+
+	plans, _, err := client.PricePlans(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error getting price plans: %w", err)
+	}
+
+	return plans, nil
+}
+
+// pricePlanUUID resolves a dedicated server price plan name the same way
+// selectel_dedicated_server_v1 does.
+func (p *mksV2Provided) pricePlanUUID(ctx context.Context, name string) (string, error) {
+	plans, err := p.pricePlans(ctx)
+	if err != nil {
+		return "", err
+	}
+	plan := plans.FindOneByName(name)
+	if plan == nil {
+		return "", fmt.Errorf("price plan %s not found", name)
+	}
+
+	return plan.UUID, nil
 }
 
 // mksV2DataSource holds the provider Config for the _v2 data sources.

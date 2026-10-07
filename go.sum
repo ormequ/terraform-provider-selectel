@@ -159,8 +159,8 @@ github.com/oapi-codegen/runtime v1.4.0 h1:KLOSFOp7UzkbS7Cs1ms6NBEKYr0WmH2wZG0KKb
 github.com/oapi-codegen/runtime v1.4.0/go.mod h1:5sw5fxCDmnOzKNYmkVNF8d34kyUeejJEY8HNT2WaPec=
 github.com/oklog/run v1.1.0 h1:GEenZ1cK0+q0+wsJew9qUg/DyD8k3JzYsZAi5gYi2mA=
 github.com/oklog/run v1.1.0/go.mod h1:sVPdnTZT1zYwAJeCMu2Th4T21pA3FPOQRfWjQlk7DVU=
-github.com/ormequ/mks-go/v2 v2.0.0-20261007113832-99e4eca7126a h1:J5W1fNQcveWCDoodveJp35wJFMwiWYWxZZ8T/hzFp9c=
-github.com/ormequ/mks-go/v2 v2.0.0-20261007113832-99e4eca7126a/go.mod h1:ELaNwk6TuLlKZLO96quwO+wwXHe6gbxf9NpLEgxRDjk=
+github.com/ormequ/mks-go/v2 v2.0.0-20261007125314-13924b6fc3bd h1:23DbvgeKpKPvz48zpoYEJnSMnTpHrRJlYkWKCdiZXQ4=
+github.com/ormequ/mks-go/v2 v2.0.0-20261007125314-13924b6fc3bd/go.mod h1:ELaNwk6TuLlKZLO96quwO+wwXHe6gbxf9NpLEgxRDjk=
 github.com/pjbgf/sha1cd v0.3.2 h1:a9wb0bp1oC2TGwStyn0Umc/IGKQnEgF0vVaZ8QF8eo4=
 github.com/pjbgf/sha1cd v0.3.2/go.mod h1:zQWigSxVmsHEZow5qaLtPYxpcKMMQpa09ixqBxuCS6A=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=

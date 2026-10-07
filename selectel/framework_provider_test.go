@@ -57,10 +57,12 @@ func (d *muxTestDataSource) Read(ctx context.Context, _ datasource.ReadRequest, 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("username"), d.config.Username)...)
 }
 
+var testProviderEnv = []string{"OS_AUTH_URL", "OS_REGION_NAME", "OS_DOMAIN_NAME", "OS_USERNAME", "OS_PASSWORD"}
+
 func setTestProviderEnv(t *testing.T) {
 	t.Helper()
 
-	for _, env := range []string{"OS_AUTH_URL", "OS_REGION_NAME", "OS_DOMAIN_NAME", "OS_USERNAME", "OS_PASSWORD"} {
+	for _, env := range testProviderEnv {
 		if os.Getenv(env) == "" {
 			t.Setenv(env, "test")
 		}
@@ -80,7 +82,7 @@ func TestProviderServerSchema(t *testing.T) {
 			name: "credentials in provider block",
 			setup: func(t *testing.T) {
 				t.Helper()
-				for _, env := range []string{"OS_AUTH_URL", "OS_REGION_NAME", "OS_DOMAIN_NAME", "OS_USERNAME", "OS_PASSWORD"} {
+				for _, env := range testProviderEnv {
 					t.Setenv(env, "")
 				}
 			},

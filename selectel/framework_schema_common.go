@@ -12,7 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 )
 
-func (r resourceDocs) idResourceAttribute() schema.StringAttribute {
+func (r resourceDocs) idFrameworkResourceSchema() schema.StringAttribute {
 	return schema.StringAttribute{
 		Computed:      true,
 		Description:   r.idDescription() + ".",
@@ -20,14 +20,14 @@ func (r resourceDocs) idResourceAttribute() schema.StringAttribute {
 	}
 }
 
-func (r resourceDocs) idIdentityAttribute(controlPanelHint string) identityschema.StringAttribute {
+func (r resourceDocs) idFrameworkIdentitySchema(controlPanelHint string) identityschema.StringAttribute {
 	return identityschema.StringAttribute{
 		RequiredForImport: true,
 		Description:       fmt.Sprintf("%s, for example, `%s`. %s", r.idDescription(), exampleResourceID, controlPanelHint),
 	}
 }
 
-func (r resourceDocs) regionResourceAttribute() schema.StringAttribute {
+func (r resourceDocs) regionFrameworkResourceSchema() schema.StringAttribute {
 	return schema.StringAttribute{
 		Required:      true,
 		Description:   r.regionDescription() + " " + regionLearnMore,
@@ -35,14 +35,14 @@ func (r resourceDocs) regionResourceAttribute() schema.StringAttribute {
 	}
 }
 
-func (r resourceDocs) regionIdentityAttribute(controlPanelHint string) identityschema.StringAttribute {
+func (r resourceDocs) regionFrameworkIdentitySchema(controlPanelHint string) identityschema.StringAttribute {
 	return identityschema.StringAttribute{
 		RequiredForImport: true,
 		Description:       r.regionDescription() + " " + controlPanelHint + " " + regionLearnMore,
 	}
 }
 
-func projectIDResourceAttribute() schema.StringAttribute {
+func projectIDFrameworkResourceSchema() schema.StringAttribute {
 	return schema.StringAttribute{
 		Required:      true,
 		Description:   projectIDDescription + " " + projectIDFromResource + " " + projectIDLearnMore,
@@ -50,7 +50,7 @@ func projectIDResourceAttribute() schema.StringAttribute {
 	}
 }
 
-func projectIDIdentityAttribute() identityschema.StringAttribute {
+func projectIDFrameworkIdentitySchema() identityschema.StringAttribute {
 	return identityschema.StringAttribute{
 		RequiredForImport: true,
 		Description:       projectIDDescription + " " + projectIDFromControlPanel + " " + projectIDLearnMore,

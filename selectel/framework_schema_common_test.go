@@ -119,14 +119,14 @@ func TestWithFrameworkDocsHintsOtherTypes(t *testing.T) {
 		block.NestedObject.Blocks["sub"].(schema.SingleNestedBlock).Attributes["inner"].GetDescription())
 }
 
-func TestFrameworkResourceDocsIDAttributes(t *testing.T) {
+func TestResourceDocsFrameworkIDSchemas(t *testing.T) {
 	docs := resourceDocs{Name: "public port"}
 
-	res := docs.idResourceAttribute()
+	res := docs.idFrameworkResourceSchema()
 	assert.True(t, res.Computed)
 	assert.Equal(t, "Unique identifier of the public port.", res.Description)
 
-	identity := docs.idIdentityAttribute("Copy it from the card.")
+	identity := docs.idFrameworkIdentitySchema("Copy it from the card.")
 	assert.True(t, identity.RequiredForImport)
 	assert.Equal(t,
 		"Unique identifier of the public port, for example, `b311ce58-2658-46b5-b733-7a0f418703f2`. Copy it from the card.",
@@ -137,8 +137,8 @@ func TestFrameworkHelpersMatchSDKv2(t *testing.T) {
 	docs := resourceDocs{Name: "public port"}
 	hint := "Copy it from the card."
 
-	assert.Equal(t, docs.regionResourceSchema().Description, docs.regionResourceAttribute().Description)
-	assert.Equal(t, docs.regionIdentitySchema(hint).Description, docs.regionIdentityAttribute(hint).Description)
-	assert.Equal(t, projectIDResourceSchema().Description, projectIDResourceAttribute().Description)
-	assert.Equal(t, projectIDIdentitySchema().Description, projectIDIdentityAttribute().Description)
+	assert.Equal(t, docs.regionResourceSchema().Description, docs.regionFrameworkResourceSchema().Description)
+	assert.Equal(t, docs.regionIdentitySchema(hint).Description, docs.regionFrameworkIdentitySchema(hint).Description)
+	assert.Equal(t, projectIDResourceSchema().Description, projectIDFrameworkResourceSchema().Description)
+	assert.Equal(t, projectIDIdentitySchema().Description, projectIDFrameworkIdentitySchema().Description)
 }

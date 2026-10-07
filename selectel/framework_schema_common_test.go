@@ -3,10 +3,12 @@ package selectel
 import (
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -50,6 +52,15 @@ func TestWithFrameworkDocsHints(t *testing.T) {
 			Optional:      true,
 			PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
 			Description:   "List field.",
+		},
+		"zones": schema.ListAttribute{
+			ElementType: types.StringType,
+			Optional:    true,
+			Computed:    true,
+			Default: listdefault.StaticValue(types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("ru-1a"), types.StringValue("ru-1b"),
+			})),
+			Description: "Zones.",
 		},
 		"items": schema.ListNestedAttribute{
 			Optional: true,
@@ -105,6 +116,7 @@ func TestWithFrameworkDocsHints(t *testing.T) {
 
 	assert.Equal(t, "Int field. Changing this creates a new public port. The default value is `3`.", s["count"].GetDescription())
 	assert.Equal(t, "List field. Changing this creates a new public port.", s["tags"].GetDescription())
+	assert.Equal(t, "Zones. The default value is `[\"ru-1a\",\"ru-1b\"]`.", s["zones"].GetDescription())
 	assert.Equal(t, "Inner field. The default value is `false`.",
 		s["items"].(schema.ListNestedAttribute).NestedObject.Attributes["inner"].GetDescription())
 

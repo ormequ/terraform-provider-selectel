@@ -149,8 +149,8 @@ func (r resourceDocs) withFrameworkBlockDocsHints(blocks map[string]schema.Block
 	return blocks
 }
 
-// frameworkDefaultHint renders scalar defaults only: SDKv2 rejects defaults on
-// lists and sets, and no map in this provider has one.
+// frameworkDefaultHint is defaultHint for framework defaults. Collections, which
+// SDKv2 cannot default, are rendered the way the framework prints them.
 func frameworkDefaultHint(ctx context.Context, d any) string {
 	switch d := d.(type) {
 	case defaults.Bool:
@@ -188,6 +188,31 @@ func frameworkDefaultHint(ctx context.Context, d any) string {
 		d.DefaultString(ctx, defaults.StringRequest{}, resp)
 
 		return defaultHint(resp.PlanValue.ValueString())
+	case defaults.Dynamic:
+		resp := &defaults.DynamicResponse{}
+		d.DefaultDynamic(ctx, defaults.DynamicRequest{}, resp)
+
+		return defaultHint(resp.PlanValue.String())
+	case defaults.List:
+		resp := &defaults.ListResponse{}
+		d.DefaultList(ctx, defaults.ListRequest{}, resp)
+
+		return defaultHint(resp.PlanValue.String())
+	case defaults.Map:
+		resp := &defaults.MapResponse{}
+		d.DefaultMap(ctx, defaults.MapRequest{}, resp)
+
+		return defaultHint(resp.PlanValue.String())
+	case defaults.Object:
+		resp := &defaults.ObjectResponse{}
+		d.DefaultObject(ctx, defaults.ObjectRequest{}, resp)
+
+		return defaultHint(resp.PlanValue.String())
+	case defaults.Set:
+		resp := &defaults.SetResponse{}
+		d.DefaultSet(ctx, defaults.SetRequest{}, resp)
+
+		return defaultHint(resp.PlanValue.String())
 	}
 
 	return ""

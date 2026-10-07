@@ -64,55 +64,55 @@ func (r resourceDocs) withFrameworkDocsHints(attrs map[string]schema.Attribute) 
 	for name, attr := range attrs {
 		switch a := attr.(type) {
 		case schema.BoolAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.DynamicAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.Float32Attribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.Float64Attribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.Int32Attribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.Int64Attribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.ListAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.MapAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.NumberAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.ObjectAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.SetAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.StringAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			attrs[name] = a
 		case schema.ListNestedAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			r.withFrameworkDocsHints(a.NestedObject.Attributes)
 			attrs[name] = a
 		case schema.MapNestedAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			r.withFrameworkDocsHints(a.NestedObject.Attributes)
 			attrs[name] = a
 		case schema.SetNestedAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			r.withFrameworkDocsHints(a.NestedObject.Attributes)
 			attrs[name] = a
 		case schema.SingleNestedAttribute:
-			a.Description += replaceHint(ctx, r.Name, a.PlanModifiers) + frameworkDefaultHint(ctx, a.Default)
+			appendHint(&a.Description, &a.MarkdownDescription, replaceHint(ctx, r.Name, a.PlanModifiers)+frameworkDefaultHint(ctx, a.Default))
 			r.withFrameworkDocsHints(a.Attributes)
 			attrs[name] = a
 		}
@@ -129,17 +129,17 @@ func (r resourceDocs) withFrameworkBlockDocsHints(blocks map[string]schema.Block
 	for name, block := range blocks {
 		switch b := block.(type) {
 		case schema.ListNestedBlock:
-			b.Description += replaceHint(ctx, r.Name, b.PlanModifiers)
+			appendHint(&b.Description, &b.MarkdownDescription, replaceHint(ctx, r.Name, b.PlanModifiers))
 			r.withFrameworkDocsHints(b.NestedObject.Attributes)
 			r.withFrameworkBlockDocsHints(b.NestedObject.Blocks)
 			blocks[name] = b
 		case schema.SetNestedBlock:
-			b.Description += replaceHint(ctx, r.Name, b.PlanModifiers)
+			appendHint(&b.Description, &b.MarkdownDescription, replaceHint(ctx, r.Name, b.PlanModifiers))
 			r.withFrameworkDocsHints(b.NestedObject.Attributes)
 			r.withFrameworkBlockDocsHints(b.NestedObject.Blocks)
 			blocks[name] = b
 		case schema.SingleNestedBlock:
-			b.Description += replaceHint(ctx, r.Name, b.PlanModifiers)
+			appendHint(&b.Description, &b.MarkdownDescription, replaceHint(ctx, r.Name, b.PlanModifiers))
 			r.withFrameworkDocsHints(b.Attributes)
 			r.withFrameworkBlockDocsHints(b.Blocks)
 			blocks[name] = b
@@ -216,6 +216,15 @@ func frameworkDefaultHint(ctx context.Context, d any) string {
 	}
 
 	return ""
+}
+
+// appendHint adds the hint to both descriptions: the framework serves
+// MarkdownDescription instead of Description when it is set.
+func appendHint(description, markdownDescription *string, hint string) {
+	*description += hint
+	if *markdownDescription != "" {
+		*markdownDescription += hint
+	}
 }
 
 type describer interface {

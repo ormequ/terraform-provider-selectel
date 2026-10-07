@@ -36,6 +36,12 @@ func TestWithFrameworkDocsHints(t *testing.T) {
 			Default:     stringdefault.StaticString(""),
 			Description: "String field.",
 		},
+		"markdown": schema.StringAttribute{
+			Required:            true,
+			PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			Description:         "Markdown field.",
+			MarkdownDescription: "**Markdown** field.",
+		},
 		"plain": schema.StringAttribute{
 			Computed:    true,
 			Description: "Computed field.",
@@ -90,6 +96,8 @@ func TestWithFrameworkDocsHints(t *testing.T) {
 	assert.Equal(t, "Force new field. Changing this creates a new public port.", s["force_new"].GetDescription())
 	assert.Equal(t, "Bool field. The default value is `true`.", s["with_default"].GetDescription())
 	assert.Equal(t, "String field. The default value is an empty string.", s["empty_default"].GetDescription())
+	assert.Equal(t, "Markdown field. Changing this creates a new public port.", s["markdown"].GetDescription())
+	assert.Equal(t, "**Markdown** field. Changing this creates a new public port.", s["markdown"].GetMarkdownDescription())
 	assert.Equal(t, "Computed field.", s["plain"].GetDescription())
 	assert.Equal(t, "Inner field. Changing this creates a new public port.",
 		s["nested"].(schema.SingleNestedAttribute).Attributes["inner"].GetDescription())

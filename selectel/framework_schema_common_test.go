@@ -38,29 +38,6 @@ func TestWithFrameworkDocsHints(t *testing.T) {
 			Computed:    true,
 			Description: "Computed field.",
 		},
-		"nested": schema.SingleNestedAttribute{
-			Optional: true,
-			Attributes: map[string]schema.Attribute{
-				"inner": schema.StringAttribute{
-					Optional:      true,
-					PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIfConfigured()},
-					Description:   "Inner field.",
-				},
-			},
-		},
-	})
-
-	assert.Equal(t, "Force new field. Changing this creates a new public port.", s["force_new"].GetDescription())
-	assert.Equal(t, "Bool field. The default value is `true`.", s["with_default"].GetDescription())
-	assert.Equal(t, "String field. The default value is an empty string.", s["empty_default"].GetDescription())
-	assert.Equal(t, "Computed field.", s["plain"].GetDescription())
-	assert.Equal(t, "Inner field. Changing this creates a new public port.",
-		s["nested"].(schema.SingleNestedAttribute).Attributes["inner"].GetDescription())
-}
-
-func TestWithFrameworkDocsHintsOtherTypes(t *testing.T) {
-	docs := resourceDocs{Name: "public port"}
-	s := docs.withFrameworkDocsHints(map[string]schema.Attribute{
 		"count": schema.Int64Attribute{
 			Optional:      true,
 			Computed:      true,
@@ -87,8 +64,26 @@ func TestWithFrameworkDocsHintsOtherTypes(t *testing.T) {
 				},
 			},
 		},
+		"nested": schema.SingleNestedAttribute{
+			Optional: true,
+			Attributes: map[string]schema.Attribute{
+				"inner": schema.StringAttribute{
+					Optional:      true,
+					PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIfConfigured()},
+					Description:   "Inner field.",
+				},
+			},
+		},
 	})
-	blocks := docs.withFrameworkBlockDocsHints(map[string]schema.Block{
+
+	assert.Equal(t, "Force new field. Changing this creates a new public port.", s["force_new"].GetDescription())
+	assert.Equal(t, "Bool field. The default value is `true`.", s["with_default"].GetDescription())
+	assert.Equal(t, "String field. The default value is an empty string.", s["empty_default"].GetDescription())
+	assert.Equal(t, "Computed field.", s["plain"].GetDescription())
+	assert.Equal(t, "Inner field. Changing this creates a new public port.",
+		s["nested"].(schema.SingleNestedAttribute).Attributes["inner"].GetDescription())
+
+	blocks := resourceDocs{Name: "public port"}.withFrameworkBlockDocsHints(map[string]schema.Block{
 		"block": schema.ListNestedBlock{
 			PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
 			Description:   "Block.",

@@ -5,9 +5,13 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -52,6 +56,67 @@ func TestWithFrameworkDocsHints(t *testing.T) {
 	assert.Equal(t, "Computed field.", s["plain"].GetDescription())
 	assert.Equal(t, "Inner field. Changing this creates a new public port.",
 		s["nested"].(schema.SingleNestedAttribute).Attributes["inner"].GetDescription())
+}
+
+func TestWithFrameworkDocsHintsOtherTypes(t *testing.T) {
+	docs := resourceDocs{Name: "public port"}
+	s := docs.withFrameworkDocsHints(map[string]schema.Attribute{
+		"count": schema.Int64Attribute{
+			Optional:      true,
+			Computed:      true,
+			Default:       int64default.StaticInt64(3),
+			PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()},
+			Description:   "Int field.",
+		},
+		"tags": schema.ListAttribute{
+			ElementType:   types.StringType,
+			Optional:      true,
+			PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			Description:   "List field.",
+		},
+		"items": schema.ListNestedAttribute{
+			Optional: true,
+			NestedObject: schema.NestedAttributeObject{
+				Attributes: map[string]schema.Attribute{
+					"inner": schema.BoolAttribute{
+						Optional:    true,
+						Computed:    true,
+						Default:     booldefault.StaticBool(false),
+						Description: "Inner field.",
+					},
+				},
+			},
+		},
+	})
+	blocks := docs.withFrameworkBlockDocsHints(map[string]schema.Block{
+		"block": schema.ListNestedBlock{
+			PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			Description:   "Block.",
+			NestedObject: schema.NestedBlockObject{
+				Blocks: map[string]schema.Block{
+					"sub": schema.SingleNestedBlock{
+						Attributes: map[string]schema.Attribute{
+							"inner": schema.StringAttribute{
+								Required:      true,
+								PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+								Description:   "Inner field.",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	assert.Equal(t, "Int field. Changing this creates a new public port. The default value is `3`.", s["count"].GetDescription())
+	assert.Equal(t, "List field. Changing this creates a new public port.", s["tags"].GetDescription())
+	assert.Equal(t, "Inner field. The default value is `false`.",
+		s["items"].(schema.ListNestedAttribute).NestedObject.Attributes["inner"].GetDescription())
+
+	block := blocks["block"].(schema.ListNestedBlock)
+	assert.Equal(t, "Block. Changing this creates a new public port.", block.Description)
+	assert.Equal(t, "Inner field. Changing this creates a new public port.",
+		block.NestedObject.Blocks["sub"].(schema.SingleNestedBlock).Attributes["inner"].GetDescription())
 }
 
 func TestFrameworkResourceDocsIDAttributes(t *testing.T) {

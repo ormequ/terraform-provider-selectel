@@ -9,7 +9,6 @@ import (
 	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
-	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
@@ -20,23 +19,10 @@ type testFrameworkProvider struct {
 	*frameworkProvider
 }
 
-// DataSources adds the data sources that only tests serve: the mux check and
-// the _v2 MKS ones until the provider registers them.
+// DataSources adds the data source that only tests serve: the mux check.
 func (p testFrameworkProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return append(p.frameworkProvider.DataSources(ctx),
 		func() datasource.DataSource { return &muxTestDataSource{} },
-		newMKSKubeconfigV2DataSource,
-		newMKSKubeVersionsV2DataSource,
-		newMKSFeatureGatesV2DataSource,
-		newMKSAdmissionControllersV2DataSource,
-	)
-}
-
-// Resources adds the _v2 MKS resources until the provider registers them.
-func (p testFrameworkProvider) Resources(ctx context.Context) []func() resource.Resource {
-	return append(p.frameworkProvider.Resources(ctx),
-		newMKSClusterV2Resource,
-		newMKSNodegroupV2Resource,
 	)
 }
 
@@ -114,9 +100,24 @@ func TestProviderServerSchema(t *testing.T) {
 			assert.Empty(t, resp.Diagnostics)
 			assert.Contains(t, resp.ResourceSchemas, "selectel_vpc_project_v2")
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_mux_test")
-			assert.Contains(t, resp.DataSourceSchemas, "selectel_mks_kubeconfig_v2")
-			assert.Contains(t, resp.ResourceSchemas, "selectel_mks_cluster_v2")
-			assert.Contains(t, resp.ResourceSchemas, "selectel_mks_nodegroup_v2")
+
+			// The _v2 MKS schemas come from the provider itself, not from the
+			// test wrapper.
+			providerServer, err := ProviderServer(context.Background(), "test")
+			require.NoError(t, err)
+			realResp, err := providerServer().GetProviderSchema(context.Background(), &tfprotov6.GetProviderSchemaRequest{})
+			require.NoError(t, err)
+			assert.Empty(t, realResp.Diagnostics)
+			assert.NotContains(t, realResp.DataSourceSchemas, "selectel_mux_test")
+			for _, name := range []string{"selectel_mks_cluster_v2", "selectel_mks_nodegroup_v2"} {
+				assert.Contains(t, realResp.ResourceSchemas, name)
+			}
+			for _, name := range []string{
+				"selectel_mks_kubeconfig_v2", "selectel_mks_kube_versions_v2",
+				"selectel_mks_feature_gates_v2", "selectel_mks_admission_controllers_v2",
+			} {
+				assert.Contains(t, realResp.DataSourceSchemas, name)
+			}
 		})
 	}
 }

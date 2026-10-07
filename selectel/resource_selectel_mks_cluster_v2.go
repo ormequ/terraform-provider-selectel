@@ -909,10 +909,20 @@ func upgradeMKSClusterV2KubeVersion(ctx context.Context, client *mksv2.ServiceCl
 }
 
 // mksClusterV2KubeVersion keeps the version from the state while the cluster
-// runs a newer version: patch auto-upgrade moves the cluster past the
-// configuration, which v1 hid with a diff suppress, see ModifyPlan.
+// runs a newer patch of the same minor version: patch auto-upgrade moves the
+// cluster past the configuration, which v1 hid with a diff suppress. Any
+// other difference, such as a minor upgrade outside Terraform, is read as is;
+// ModifyPlan then accepts a lower configured version with no change.
 func mksClusterV2KubeVersion(prior, actual string) string {
 	if prior == "" {
+		return actual
+	}
+	priorMinor, err := kubeVersionTrimToMinor(prior)
+	if err != nil {
+		return actual
+	}
+	actualMinor, err := kubeVersionTrimToMinor(actual)
+	if err != nil || priorMinor != actualMinor {
 		return actual
 	}
 	order, err := compareMKSClusterV2KubeVersions(prior, actual)

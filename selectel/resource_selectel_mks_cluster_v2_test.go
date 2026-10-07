@@ -389,6 +389,62 @@ func TestMKSClusterV2ResourceKubeVersionUpgrade(t *testing.T) {
 	})
 }
 
+// A minor upgrade outside Terraform is read as is, so the next one-minor
+// upgrade is checked against the version the cluster runs.
+func TestMKSClusterV2ResourceKubeVersionUpgradedOutside(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	fake.seedKubeVersions(
+		mksclient.KubeVersionInfo{Version: new("1.30.5")},
+		mksclient.KubeVersionInfo{Version: new("1.31.2")},
+		mksclient.KubeVersionInfo{Version: new("1.32.0"), IsDefault: new(true)},
+	)
+
+	config := func(kubeVersion string) string {
+		return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = %q
+  workers_type = "CLOUD"
+`, kubeVersion))
+	}
+	calls := func(patch, minor int) resource.TestCheckFunc {
+		return func(_ *terraform.State) error {
+			gotPatch, gotMinor := fake.callCount(mksV2RouteUpgradePatch), fake.callCount(mksV2RouteUpgradeMinor)
+			if gotPatch != patch || gotMinor != minor {
+				return fmt.Errorf("upgrade calls: patch %d, minor %d, want %d and %d", gotPatch, gotMinor, patch, minor)
+			}
+
+			return nil
+		}
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: config("1.30.5"),
+				Check:  calls(0, 0),
+			},
+			{
+				// Upgraded in the panel: the old configuration plans nothing.
+				PreConfig: func() {
+					fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { c.KubeVersion = "1.31.2" })
+				},
+				Config:   config("1.30.5"),
+				PlanOnly: true,
+			},
+			{
+				Config: config("1.32.0"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kube_version", "1.32.0"),
+					calls(0, 1),
+				),
+			},
+		},
+	})
+}
+
 func TestMKSClusterV2ResourceImport(t *testing.T) {
 	t.Parallel()
 	fake := newMKSV2Fake(t)
@@ -588,7 +644,8 @@ func TestMKSClusterV2KubeVersion(t *testing.T) {
 		{name: "same version", prior: "1.30.3", actual: "1.30.3", want: "1.30.3"},
 		{name: "newer patch keeps the configured one", prior: "1.30.3", actual: "1.30.5", want: "1.30.3"},
 		{name: "older patch is drift", prior: "1.30.5", actual: "1.30.3", want: "1.30.3"},
-		{name: "newer minor keeps the configured one", prior: "1.30.5", actual: "1.31.1", want: "1.30.5"},
+		{name: "newer minor is drift", prior: "1.30.5", actual: "1.31.1", want: "1.31.1"},
+		{name: "newer major is drift", prior: "1.30.5", actual: "2.0.1", want: "2.0.1"},
 		{name: "older minor is drift", prior: "1.31.1", actual: "1.30.5", want: "1.30.5"},
 	}
 

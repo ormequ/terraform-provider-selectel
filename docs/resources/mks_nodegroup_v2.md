@@ -106,9 +106,50 @@ resource "selectel_mks_nodegroup_v2" "nodegroup_1" {
 
   * `hostname` - Hostname of the node.
 
+## Moving from selectel\_mks\_nodegroup\_v1
+
+In Terraform 1.8.0 and later, a [`moved` block](https://developer.hashicorp.com/terraform/language/moved) moves `selectel_mks_nodegroup_v1` in the state to `selectel_mks_nodegroup_v2` without changing the node group itself. Replace the `selectel_mks_nodegroup_v1` resource in the configuration with an equivalent `selectel_mks_nodegroup_v2` one and add:
+
+```terraform
+moved {
+  from = selectel_mks_nodegroup_v1.nodegroup_1
+  to   = selectel_mks_nodegroup_v2.nodegroup_1
+}
+```
+
+Move the node groups together with their cluster. For the mapping of the arguments, earlier Terraform versions and a complete example, see the [migration guide](https://registry.terraform.io/providers/selectel/selectel/latest/docs/guides/migrating_mks_to_v2).
+
 ## Import
 
-You can import a node group:
+### In Terraform 1.12.0 and later
+
+Use the [`import` block](https://developer.hashicorp.com/terraform/language/import) with the `identity` attribute. The project comes from the provider configuration:
+
+```terraform
+import {
+  to = selectel_mks_nodegroup_v2.nodegroup_1
+  identity = {
+    cluster_id = "<cluster_id>"
+    id         = "<nodegroup_id>"
+    pool       = "<selectel_pool>"
+  }
+}
+```
+
+### In Terraform 1.5.0 and later
+
+Use the [`import` block](https://developer.hashicorp.com/terraform/language/import) with the `id` attribute. The pool comes from the provider configuration, as for the `terraform import` command.
+
+```terraform
+import {
+  to = selectel_mks_nodegroup_v2.nodegroup_1
+  id = "<cluster_id>/<nodegroup_id>"
+}
+```
+
+### All versions
+
+Use the [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import):
 
 ```shell
 export OS_DOMAIN_NAME=<account_id>

@@ -131,9 +131,50 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
 * `status` - Cluster status.
 
+## Moving from selectel\_mks\_cluster\_v1
+
+In Terraform 1.8.0 and later, a [`moved` block](https://developer.hashicorp.com/terraform/language/moved) moves `selectel_mks_cluster_v1` in the state to `selectel_mks_cluster_v2` without changing the cluster itself. Replace the `selectel_mks_cluster_v1` resource in the configuration with an equivalent `selectel_mks_cluster_v2` one and add:
+
+```terraform
+moved {
+  from = selectel_mks_cluster_v1.cluster_1
+  to   = selectel_mks_cluster_v2.cluster_1
+}
+```
+
+Set `workers_type = "CLOUD"` for a cluster created by `selectel_mks_cluster_v1`. For the mapping of the arguments, earlier Terraform versions and a complete example, see the [migration guide](https://registry.terraform.io/providers/selectel/selectel/latest/docs/guides/migrating_mks_to_v2).
+
 ## Import
 
-You can import a cluster:
+### In Terraform 1.12.0 and later
+
+Use the [`import` block](https://developer.hashicorp.com/terraform/language/import) with the `identity` attribute:
+
+```terraform
+import {
+  to = selectel_mks_cluster_v2.cluster_1
+  identity = {
+    id         = "<cluster_id>"
+    project_id = "<selectel_project_id>"
+    pool       = "<selectel_pool>"
+  }
+}
+```
+
+### In Terraform 1.5.0 and later
+
+Use the [`import` block](https://developer.hashicorp.com/terraform/language/import) with the `id` attribute. The project and the pool come from the provider configuration, as for the `terraform import` command.
+
+```terraform
+import {
+  to = selectel_mks_cluster_v2.cluster_1
+  id = "<cluster_id>"
+}
+```
+
+### All versions
+
+Use the [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import):
 
 ```shell
 export OS_DOMAIN_NAME=<account_id>

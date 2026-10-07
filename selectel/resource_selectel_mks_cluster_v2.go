@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/identityschema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -22,6 +23,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -35,12 +37,22 @@ const mksClusterV2DefaultTimeout = 60 * time.Minute
 
 var (
 	_ resource.ResourceWithConfigure      = &mksClusterV2Resource{}
+	_ resource.ResourceWithIdentity       = &mksClusterV2Resource{}
 	_ resource.ResourceWithImportState    = &mksClusterV2Resource{}
 	_ resource.ResourceWithModifyPlan     = &mksClusterV2Resource{}
+	_ resource.ResourceWithMoveState      = &mksClusterV2Resource{}
 	_ resource.ResourceWithValidateConfig = &mksClusterV2Resource{}
 )
 
 var mksClusterV2Docs = resourceDocs{Name: "cluster"}
+
+const (
+	mksClusterV2IDHint = "To get the cluster ID, in the [Control panel](https://my.selectel.ru/vpc/mks/), go to " +
+		"**Cloud Platform** ⟶ **Kubernetes** ⟶ the cluster page ⟶ copy the ID at the top of the page under the cluster name, " +
+		"near the region and pool."
+	mksClusterV2PoolHint = "To get information about the pool, in the [Control panel](https://my.selectel.ru/vpc/mks/), " +
+		"go to **Cloud Platform** ⟶ **Kubernetes**. The pool is in the **Pool** column."
+)
 
 // workers_type is the user-facing name of the API network_type.
 var mksClusterV2WorkersTypes = map[string]string{
@@ -97,6 +109,13 @@ type mksClusterV2Model struct {
 	Status                        types.String   `tfsdk:"status"`
 	KubeAPIIP                     types.String   `tfsdk:"kube_api_ip"`
 	Timeouts                      timeouts.Value `tfsdk:"timeouts"`
+}
+
+// mksClusterV2IdentityModel identifies a cluster for import by identity.
+type mksClusterV2IdentityModel struct {
+	ID        types.String `tfsdk:"id"`
+	ProjectID types.String `tfsdk:"project_id"`
+	Pool      types.String `tfsdk:"pool"`
 }
 
 type mksClusterV2CiliumModel struct {
@@ -344,6 +363,25 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 	}
 }
 
+func (r *mksClusterV2Resource) IdentitySchema(_ context.Context, _ resource.IdentitySchemaRequest, resp *resource.IdentitySchemaResponse) {
+	resp.IdentitySchema = identityschema.Schema{
+		Attributes: map[string]identityschema.Attribute{
+			"id":         mksClusterV2Docs.idFrameworkIdentitySchema(mksClusterV2IDHint),
+			"project_id": projectIDFrameworkIdentitySchema(),
+			"pool":       mksClusterV2Docs.regionFrameworkIdentitySchema(mksClusterV2PoolHint),
+		},
+	}
+}
+
+// setIdentity is a no-op when Terraform passed no identity.
+func (m *mksClusterV2Model) setIdentity(ctx context.Context, identity *tfsdk.ResourceIdentity) diag.Diagnostics {
+	if identity == nil {
+		return nil
+	}
+
+	return identity.Set(ctx, mksClusterV2IdentityModel{ID: m.ID, ProjectID: m.ProjectID, Pool: m.Pool})
+}
+
 func (r *mksClusterV2Resource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var clusterType, cniType types.String
 	var autoUpgrade types.Bool
@@ -450,6 +488,7 @@ func (r *mksClusterV2Resource) Create(ctx context.Context, req resource.CreateRe
 	}
 	state := plan
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, plan, true)...)
+	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
 	if waitErr != nil {
 		resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 		resp.Diagnostics.AddError("Error waiting for the cluster to become ready", waitErr.Error())
@@ -540,6 +579,7 @@ func (r *mksClusterV2Resource) Read(ctx context.Context, req resource.ReadReques
 	prior := state
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, prior, false)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
 }
 
 func (r *mksClusterV2Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -594,6 +634,7 @@ func (r *mksClusterV2Resource) Update(ctx context.Context, req resource.UpdateRe
 	}
 	resp.Diagnostics.Append(plan.fromAPI(ctx, got, plan, true)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	resp.Diagnostics.Append(plan.setIdentity(ctx, resp.Identity)...)
 }
 
 func (r *mksClusterV2Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -633,9 +674,23 @@ func (r *mksClusterV2Resource) Delete(ctx context.Context, req resource.DeleteRe
 	}
 }
 
-// ImportState takes the project and the pool from the provider configuration,
-// because the cluster ID carries neither, like selectel_mks_cluster_v1.
+// ImportState takes the project and the pool from the identity. Import by ID
+// takes them from the provider configuration, because the cluster ID carries
+// neither, like selectel_mks_cluster_v1.
 func (r *mksClusterV2Resource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if req.ID == "" {
+		var identity mksClusterV2IdentityModel
+		resp.Diagnostics.Append(req.Identity.Get(ctx, &identity)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), identity.ID)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"), identity.ProjectID)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pool"), identity.Pool)...)
+
+		return
+	}
+
 	if r.config == nil || r.config.ProjectID == "" {
 		resp.Diagnostics.AddError("Missing project ID", "INFRA_PROJECT_ID must be set for the resource import")
 

@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/identityschema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -22,6 +23,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
@@ -32,8 +34,10 @@ import (
 
 var (
 	_ resource.ResourceWithConfigure      = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithIdentity       = &mksNodegroupV2Resource{}
 	_ resource.ResourceWithImportState    = &mksNodegroupV2Resource{}
 	_ resource.ResourceWithModifyPlan     = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithMoveState      = &mksNodegroupV2Resource{}
 	_ resource.ResourceWithValidateConfig = &mksNodegroupV2Resource{}
 )
 
@@ -83,6 +87,15 @@ type mksNodegroupV2Model struct {
 	Status                    types.String   `tfsdk:"status"`
 	Nodes                     types.List     `tfsdk:"nodes"`
 	Timeouts                  timeouts.Value `tfsdk:"timeouts"`
+}
+
+// mksNodegroupV2IdentityModel identifies a node group for import by
+// identity. The project comes from the provider: the node group has no
+// project_id attribute.
+type mksNodegroupV2IdentityModel struct {
+	ClusterID types.String `tfsdk:"cluster_id"`
+	ID        types.String `tfsdk:"id"`
+	Pool      types.String `tfsdk:"pool"`
 }
 
 type mksNodegroupV2TaintModel struct {
@@ -323,6 +336,35 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 	}
 }
 
+func (r *mksNodegroupV2Resource) IdentitySchema(_ context.Context, _ resource.IdentitySchemaRequest, resp *resource.IdentitySchemaResponse) {
+	resp.IdentitySchema = identityschema.Schema{
+		Attributes: map[string]identityschema.Attribute{
+			"cluster_id": identityschema.StringAttribute{
+				RequiredForImport: true,
+				Description: fmt.Sprintf("%s, for example, `%s`. %s", mksClusterV2Docs.idDescription(), exampleResourceID,
+					mksClusterV2IDHint),
+			},
+			"id": mksNodegroupV2Docs.idFrameworkIdentitySchema("To get the node group ID, in the " +
+				"[Control panel](https://my.selectel.ru/vpc/mks/), go to **Cloud Platform** ⟶ **Kubernetes**. Click the required cluster. " +
+				"The node group ID is at the top of the node group card, near the pool."),
+			"pool": mksNodegroupV2Docs.regionFrameworkIdentitySchema(mksClusterV2PoolHint),
+		},
+	}
+}
+
+// setIdentity is a no-op when Terraform passed no identity.
+func (m *mksNodegroupV2Model) setIdentity(ctx context.Context, identity *tfsdk.ResourceIdentity) diag.Diagnostics {
+	if identity == nil {
+		return nil
+	}
+
+	return identity.Set(ctx, mksNodegroupV2IdentityModel{
+		ClusterID: m.ClusterID,
+		ID:        types.StringValue(m.nodegroupID()),
+		Pool:      types.StringValue(mksNodegroupV2Pool(m.Segment.ValueString())),
+	})
+}
+
 // ValidateConfig rejects the cloud_nodegroup_config combinations the API
 // rejects and that depend on values, not only on presence (issues #273 and
 // #300), see mk-api-v2 validate/nodegroup.go and validate/flavor.go.
@@ -480,6 +522,7 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 	state := plan
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, plan, true)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
 	if waitErr != nil {
 		resp.Diagnostics.AddError("Error waiting for the node group to become ready", waitErr.Error())
 	}
@@ -498,7 +541,16 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 
 		return
 	}
-	client, diags := r.nodegroupClient(ctx, state.Segment)
+	pool := ""
+	if !state.Segment.IsNull() {
+		pool = mksNodegroupV2Pool(state.Segment.ValueString())
+	} else if req.Identity != nil && !req.Identity.Raw.IsNull() {
+		// Import by identity: the segment is not read yet.
+		var identity mksNodegroupV2IdentityModel
+		resp.Diagnostics.Append(req.Identity.Get(ctx, &identity)...)
+		pool = identity.Pool.ValueString()
+	}
+	client, diags := r.poolClient(ctx, pool)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -519,6 +571,7 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 	prior := state
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, prior, false)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
 }
 
 func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -573,6 +626,7 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 	}
 	resp.Diagnostics.Append(plan.fromAPI(ctx, got, plan, true)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	resp.Diagnostics.Append(plan.setIdentity(ctx, resp.Identity)...)
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, nil)...)
 }
 
@@ -617,10 +671,25 @@ func (r *mksNodegroupV2Resource) Delete(ctx context.Context, req resource.Delete
 	}
 }
 
-// ImportState takes the project and the pool from the provider configuration,
+// ImportState takes the project from the provider configuration, and the pool
+// from the identity or, for import by ID, from the provider configuration,
 // because the ID carries neither, like selectel_mks_nodegroup_v1. Read then
 // sets the segment, which gives the pool from then on.
 func (r *mksNodegroupV2Resource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if req.ID == "" {
+		var identity mksNodegroupV2IdentityModel
+		resp.Diagnostics.Append(req.Identity.Get(ctx, &identity)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"),
+			identity.ClusterID.ValueString()+"/"+identity.ID.ValueString())...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("cluster_id"), identity.ClusterID)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, []byte("true"))...)
+
+		return
+	}
+
 	if r.config == nil || r.config.ProjectID == "" {
 		resp.Diagnostics.AddError("Missing project ID", "INFRA_PROJECT_ID must be set for the resource import")
 
@@ -664,6 +733,17 @@ func mksNodegroupV2ReplaceUnlessImported(ctx context.Context, stateNull bool, ge
 // nodegroupClient builds the client for the provider project and the pool of
 // the segment, or of the provider before an import has read the segment.
 func (r *mksNodegroupV2Resource) nodegroupClient(ctx context.Context, segment types.String) (*mksv2.ServiceClient, diag.Diagnostics) {
+	pool := ""
+	if !segment.IsNull() && !segment.IsUnknown() {
+		pool = mksNodegroupV2Pool(segment.ValueString())
+	}
+
+	return r.poolClient(ctx, pool)
+}
+
+// poolClient builds the client for the provider project and the pool, or the
+// pool of the provider when pool is empty.
+func (r *mksNodegroupV2Resource) poolClient(ctx context.Context, pool string) (*mksv2.ServiceClient, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	if r.config == nil || r.config.ProjectID == "" {
@@ -673,9 +753,8 @@ func (r *mksNodegroupV2Resource) nodegroupClient(ctx context.Context, segment ty
 
 		return nil, diags
 	}
-	pool := r.config.Region
-	if !segment.IsNull() && !segment.IsUnknown() {
-		pool = mksNodegroupV2Pool(segment.ValueString())
+	if pool == "" {
+		pool = r.config.Region
 	}
 	if pool == "" {
 		diags.AddError("Missing pool", "INFRA_REGION must be set for the resource import")

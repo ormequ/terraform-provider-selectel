@@ -276,9 +276,10 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 	if opts.CniType != nil {
 		cniType = mksclient.ClusterDetailedCniType(*opts.CniType)
 	}
+	// Like validate/cluster.go, the name is stored in lower case.
 	c := mksclient.ClusterDetailed{
 		Id:                            testMKSV2ClusterID,
-		Name:                          opts.Name,
+		Name:                          strings.ToLower(opts.Name),
 		Pool:                          opts.Pool,
 		ProjectId:                     f.clients[len(f.clients)-1].projectID,
 		KubeVersion:                   opts.KubeVersion,

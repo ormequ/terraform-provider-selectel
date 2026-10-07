@@ -2,6 +2,7 @@ package selectel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -578,7 +579,10 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 
 	got, err := nodegroup.Get(ctx, client, clusterID, nodegroupID)
 	if isMKSV2NotFound(err) {
-		resp.State.RemoveResource(ctx)
+		resp.Diagnostics.Append(r.checkMovedProject(ctx, req.Private)...)
+		if !resp.Diagnostics.HasError() {
+			resp.State.RemoveResource(ctx)
+		}
 
 		return
 	}
@@ -587,6 +591,7 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 
 		return
 	}
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2MovedProjectKey, nil)...)
 	if got.DedicatedNodegroupConfig != nil {
 		// Import reads here too: the node group would otherwise get a cloud
 		// configuration planned and be replaced.
@@ -604,6 +609,34 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, prior, false)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
+}
+
+// checkMovedProject fails a Read that got 404 for a node group moved from
+// _v1 in another project than the provider one: mk-api-v2 answers 404 for a
+// cluster of another project, and removing the node group from the state
+// would plan a new one.
+func (r *mksNodegroupV2Resource) checkMovedProject(ctx context.Context, private mksNodegroupV2PrivateState) diag.Diagnostics {
+	raw, diags := private.GetKey(ctx, mksNodegroupV2MovedProjectKey)
+	if len(raw) == 0 || diags.HasError() {
+		return diags
+	}
+	var movedProject string
+	err := json.Unmarshal(raw, &movedProject)
+	if err != nil {
+		diags.AddError("Error reading node group", "can't read the project_id moved from _v1: "+err.Error())
+
+		return diags
+	}
+	providerProject := ""
+	if r.config != nil {
+		providerProject = r.config.ProjectID
+	}
+	if providerProject != movedProject {
+		diags.AddError("Error reading node group", fmt.Sprintf("provider project %q is not the node group's project %q "+
+			"(moved from _v1): set project_id of the provider to %q", providerProject, movedProject, movedProject))
+	}
+
+	return diags
 }
 
 func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {

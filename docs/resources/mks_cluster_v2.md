@@ -37,13 +37,13 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
 ## Argument Reference
 
-* `name` - (Required) Cluster name. Changing this creates a new cluster. The cluster name is included into the names of the cluster entities: node groups, nodes, load balancers, networks, and volumes.
+* `name` - (Required) Cluster name. Changing this creates a new cluster. The cluster name is included into the names of the cluster entities: node groups, nodes, load balancers, networks, and volumes. The API stores the name in lower case, so a change of only the letter case is not a change.
 
 * `pool` - (Required) Pool where the cluster is located, for example, `ru-7`. Changing this creates a new cluster. Learn more about available pools in [Product availability by location](https://docs.selectel.ru/en/infrastructure/product-availability-by-location/).
 
 * `project_id` - (Optional) Unique identifier of the associated project. Changing this creates a new cluster. If omitted, the `project_id` of the provider configuration is used. Retrieved from the [selectel_vpc_project_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/vpc_project_v2) resource. Learn more about [Projects](https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/).
 
-* `kube_version` - (Required) Kubernetes version of the cluster in the `x.y.z` format. Changing this upgrades the cluster. You can retrieve information about the Kubernetes versions with the [selectel_mks_kube_versions_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/mks_kube_versions_v2) data source.
+* `kube_version` - (Required) Kubernetes version of the cluster in the `x.y.z` format. Raising this upgrades the cluster. The cluster may run a newer version than configured, for example after patch auto-upgrade: a configured version lower than the one in the state is accepted with no change and never downgrades the cluster. You can retrieve information about the Kubernetes versions with the [selectel_mks_kube_versions_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/mks_kube_versions_v2) data source.
 
   To upgrade a patch version, set the latest available patch version of the current minor version.
 

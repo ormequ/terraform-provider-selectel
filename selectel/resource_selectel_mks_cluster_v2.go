@@ -1,6 +1,7 @@
 package selectel
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -185,8 +186,9 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 			"name": schema.StringAttribute{
 				Required: true,
 				Description: "Cluster name. It is included into the names of the cluster entities: " +
-					"node groups, nodes, load balancers, networks, and volumes.",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+					"node groups, nodes, load balancers, networks, and volumes. " +
+					"The API stores the name in lower case, so a change of only the letter case is not a change.",
+				PlanModifiers: []planmodifier.String{mksClusterV2NameCase{}, stringplanmodifier.RequiresReplace()},
 			},
 			"pool": mksClusterV2Docs.regionFrameworkResourceSchema(),
 			"project_id": schema.StringAttribute{
@@ -197,11 +199,11 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 			},
 			"kube_version": schema.StringAttribute{
 				Required: true,
-				Description: "Kubernetes version of the cluster in the `x.y.z` format. Changing it upgrades the cluster. " +
+				Description: "Kubernetes version of the cluster in the `x.y.z` format. Raising it upgrades the cluster. " +
 					"A patch upgrade takes the latest patch version of the current minor version, " +
-					"a minor upgrade takes the next minor version; downgrades and skipping a minor version are rejected at plan. " +
-					"While patch auto-upgrade moves the cluster to a newer patch version of the configured minor version, " +
-					"the configured version stays in the state.",
+					"a minor upgrade takes the next minor version; skipping a minor version is rejected at plan. " +
+					"The cluster may run a newer version than configured, for example after patch auto-upgrade: " +
+					"a configured version lower than the one in the state is accepted with no change and never downgrades the cluster.",
 			},
 			"cluster_type": schema.StringAttribute{
 				Optional: true,
@@ -427,18 +429,26 @@ func (r *mksClusterV2Resource) ModifyPlan(ctx context.Context, req resource.Modi
 	}
 
 	if !plan.KubeVersion.IsUnknown() && !plan.KubeVersion.Equal(state.KubeVersion) {
-		err := validateMKSClusterV2KubeVersionChange(state.KubeVersion.ValueString(), plan.KubeVersion.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddAttributeError(path.Root("kube_version"), "Invalid Kubernetes version change", err.Error())
+		order, err := compareMKSClusterV2KubeVersions(plan.KubeVersion.ValueString(), state.KubeVersion.ValueString())
+		if err == nil && order < 0 {
+			// Like the v1 diff suppress: a lower configured version, which
+			// patch auto-upgrade leaves behind, changes nothing.
+			plan.KubeVersion = state.KubeVersion
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("kube_version"), state.KubeVersion)...)
+		} else {
+			err = validateMKSClusterV2KubeVersionChange(state.KubeVersion.ValueString(), plan.KubeVersion.ValueString())
+			if err != nil {
+				resp.Diagnostics.AddAttributeError(path.Root("kube_version"), "Invalid Kubernetes version change", err.Error())
 
-			return
+				return
+			}
 		}
 	}
 
 	// Any update can change the status: a task-creating PATCH moves the
 	// cluster to PENDING_UPGRADE_CLUSTER_CONFIG, and a finished task leaves it
 	// ACTIVE or MAINTENANCE, whatever it was at refresh.
-	if !req.Plan.Raw.Equal(req.State.Raw) {
+	if !resp.Plan.Raw.Equal(req.State.Raw) {
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("status"), types.StringUnknown())...)
 	}
 	// The window end follows these changes and cannot be kept from the state.
@@ -799,6 +809,26 @@ func validateMKSClusterV2KubeVersionChange(current, desired string) error {
 	return nil
 }
 
+// compareMKSClusterV2KubeVersions compares two x.y.z versions like cmp.Compare.
+func compareMKSClusterV2KubeVersions(a, b string) (int, error) {
+	for _, part := range []func(string) (int, error){kubeVersionToMajor, kubeVersionToMinor, kubeVersionToPatch} {
+		partA, err := part(a)
+		if err != nil {
+			return 0, err
+		}
+		partB, err := part(b)
+		if err != nil {
+			return 0, err
+		}
+		order := cmp.Compare(partA, partB)
+		if order != 0 {
+			return order, nil
+		}
+	}
+
+	return 0, nil
+}
+
 // upgradeMKSClusterV2KubeVersion follows upgradeMKSClusterV1KubeVersion, but
 // starts from the version the cluster runs, which patch auto-upgrade can move
 // past the state.
@@ -808,6 +838,15 @@ func upgradeMKSClusterV2KubeVersion(ctx context.Context, client *mksv2.ServiceCl
 		return err
 	}
 	current := got.KubeVersion
+	order, err := compareMKSClusterV2KubeVersions(desired, current)
+	if err != nil {
+		return err
+	}
+	if order <= 0 {
+		// Patch auto-upgrade, or an upgrade outside Terraform, got there
+		// first.
+		return nil
+	}
 
 	currentMinor, err := kubeVersionTrimToMinor(current)
 	if err != nil {
@@ -819,19 +858,6 @@ func upgradeMKSClusterV2KubeVersion(ctx context.Context, client *mksv2.ServiceCl
 	}
 
 	if desiredMinor == currentMinor {
-		currentPatch, err := kubeVersionToPatch(current)
-		if err != nil {
-			return err
-		}
-		desiredPatch, err := kubeVersionToPatch(desired)
-		if err != nil {
-			return err
-		}
-		if desiredPatch <= currentPatch {
-			// Patch auto-upgrade got there first.
-			return nil
-		}
-
 		kubeVersions, err := kubeversion.List(ctx, client)
 		if err != nil {
 			return fmt.Errorf("error getting kube versions: %w", err)
@@ -883,27 +909,14 @@ func upgradeMKSClusterV2KubeVersion(ctx context.Context, client *mksv2.ServiceCl
 }
 
 // mksClusterV2KubeVersion keeps the version from the state while the cluster
-// runs a newer patch version of the same minor version: patch auto-upgrade
-// moves the cluster past the configuration, which v1 hid with a diff suppress.
+// runs a newer version: patch auto-upgrade moves the cluster past the
+// configuration, which v1 hid with a diff suppress, see ModifyPlan.
 func mksClusterV2KubeVersion(prior, actual string) string {
 	if prior == "" {
 		return actual
 	}
-
-	priorMinor, err := kubeVersionTrimToMinor(prior)
-	if err != nil {
-		return actual
-	}
-	actualMinor, err := kubeVersionTrimToMinor(actual)
-	if err != nil || priorMinor != actualMinor {
-		return actual
-	}
-	priorPatch, err := kubeVersionToPatch(prior)
-	if err != nil {
-		return actual
-	}
-	actualPatch, err := kubeVersionToPatch(actual)
-	if err != nil || actualPatch < priorPatch {
+	order, err := compareMKSClusterV2KubeVersions(prior, actual)
+	if err != nil || order > 0 {
 		return actual
 	}
 
@@ -1045,6 +1058,10 @@ func (m *mksClusterV2Model) fromAPI(ctx context.Context, c *mksclient.ClusterDet
 
 	m.ID = types.StringValue(c.Id)
 	m.Name = types.StringValue(c.Name)
+	if strings.EqualFold(prior.Name.ValueString(), c.Name) {
+		// The API lower-cases the name, see mksClusterV2NameCase.
+		m.Name = prior.Name
+	}
 	m.Pool = types.StringValue(c.Pool)
 	if c.ProjectId != "" {
 		m.ProjectID = types.StringValue(c.ProjectId)
@@ -1305,4 +1322,26 @@ func (v mksClusterV2OIDCValue) disabled() bool {
 	enabled, ok := v.Attributes()["enabled"].(types.Bool)
 
 	return ok && !enabled.IsNull() && !enabled.IsUnknown() && !enabled.ValueBool()
+}
+
+// mksClusterV2NameCase plans the state name for a configured name that
+// differs only in letter case: mk-api-v2 lower-cases the name
+// (validate/cluster.go), and v1 ignored the case too.
+type mksClusterV2NameCase struct{}
+
+func (m mksClusterV2NameCase) Description(_ context.Context) string {
+	return "A change of only the letter case keeps the state value."
+}
+
+func (m mksClusterV2NameCase) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m mksClusterV2NameCase) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.StateValue.IsNull() || req.PlanValue.IsUnknown() || req.PlanValue.IsNull() {
+		return
+	}
+	if strings.EqualFold(req.PlanValue.ValueString(), req.StateValue.ValueString()) {
+		resp.PlanValue = req.StateValue
+	}
 }

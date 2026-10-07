@@ -62,6 +62,7 @@ type mksClusterV1MoveState struct {
 type mksNodegroupV1MoveState struct {
 	ID               *string           `json:"id"`
 	ClusterID        *string           `json:"cluster_id"`
+	ProjectID        *string           `json:"project_id"`
 	Status           *string           `json:"status"`
 	AvailabilityZone *string           `json:"availability_zone"`
 	NodesCount       *int64            `json:"nodes_count"`
@@ -90,9 +91,11 @@ type mksNodegroupV1MoveState struct {
 		IP       string `json:"ip"`
 		Hostname string `json:"hostname"`
 	} `json:"nodes"`
-	// Dropped: project_id (the _v2 node group takes the project from the
-	// provider), region (the pool follows from segment), keypair_name
+	// Dropped: region (the pool follows from segment), keypair_name
 	// (mk-api-v2 ignores it), timeouts (the _v2 block starts empty).
+	// project_id goes to the private state only, see
+	// mksNodegroupV2MovedProjectKey: the _v2 node group takes the project
+	// from the provider.
 }
 
 // mksV2TimeoutsAttrTypes are the attributes of the timeouts block of both _v2
@@ -306,4 +309,20 @@ func moveMKSNodegroupV1State(ctx context.Context, req resource.MoveStateRequest,
 		return
 	}
 	resp.Diagnostics.Append(resp.TargetState.Set(ctx, state)...)
+	// The framework always sets TargetPrivate; a direct call may not.
+	if v1.ProjectID != nil && *v1.ProjectID != "" && resp.TargetPrivate != nil {
+		project, err := json.Marshal(*v1.ProjectID)
+		if err != nil {
+			resp.Diagnostics.AddError("Unable to save the _v1 project_id", err.Error())
+
+			return
+		}
+		resp.Diagnostics.Append(resp.TargetPrivate.SetKey(ctx, mksNodegroupV2MovedProjectKey, project)...)
+	}
 }
+
+// mksNodegroupV2MovedProjectKey holds the project_id of a node group moved
+// from _v1 until its first successful Read: a 404 before then more likely
+// means that the provider project is another one than that the node group is
+// gone.
+const mksNodegroupV2MovedProjectKey = "moved_project_id"

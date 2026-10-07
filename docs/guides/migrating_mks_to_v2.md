@@ -21,11 +21,11 @@ Before you start, upgrade to a provider version that has the `_v2` resources and
 
 | `selectel_mks_cluster_v1` | `selectel_mks_cluster_v2` | Note |
 |---|---|---|
-| `name` | `name` | |
+| `name` | `name` | The API stores the name in lower case, as in `_v1`: a name that differs only in letter case is the same name. |
 | `region` | `pool` | |
 | `project_id` | `project_id` | Optional in `_v2`: if omitted, the `project_id` of the provider configuration is used. |
-| `kube_version` | `kube_version` | Only the `x.y.z` format, without the `v` prefix. |
-| `cluster_type`, `zonal` | `cluster_type` | `zonal = true` is `cluster_type = "BASIC"`, `zonal = false` is `cluster_type = "HIGH_AVAILABILITY"`. If both are set, `cluster_type` wins. `zonal` is gone. |
+| `kube_version` | `kube_version` | Only the `x.y.z` format, without the `v` prefix. The cluster may run a newer version than configured, for example after patch auto-upgrade: a lower configured version is accepted and never downgrades the cluster. |
+| `cluster_type`, `zonal` | `cluster_type` | `zonal = true` is `cluster_type = "BASIC"`, `zonal = false` is `cluster_type = "HIGH_AVAILABILITY"`. If both are set, `cluster_type` wins. `zonal` is gone. Upper case only, unlike `_v1`: `BASIC`, `HIGH_AVAILABILITY` or `HIGH_AVAILABILITY_MULTI_AZ`. |
 | — | `workers_type` | Required. Set `"CLOUD"` for a cluster created by `selectel_mks_cluster_v1`. |
 | `network_id`, `subnet_id` | `network_id`, `subnet_id` | |
 | — | `cloud_subnet_cidr` | New, optional. Do not set it for an existing cluster: changing it recreates the cluster. |
@@ -34,7 +34,7 @@ Before you start, upgrade to a provider version that has the `_v2` resources and
 | `enable_autorepair` | `enable_autorepair` | |
 | `enable_patch_version_auto_upgrade` | `enable_patch_version_auto_upgrade` | |
 | `enable_pod_security_policy` | — | Removed: API v2 does not support it. Remove it from the configuration. |
-| `cni_type` | `cni_type` | |
+| `cni_type` | `cni_type` | Upper case only, unlike `_v1`: `CALICO` or `CILIUM`. |
 | `cni_cilium_settings { ... }` | `cni_cilium_settings = { ... }` | A nested attribute, so it is written with `=`. |
 | `feature_gates` | `kubernetes_options.feature_gates` | |
 | `admission_controllers` | `kubernetes_options.admission_controllers` | |
@@ -49,13 +49,13 @@ Before you start, upgrade to a provider version that has the `_v2` resources and
 | `selectel_mks_nodegroup_v1` | `selectel_mks_nodegroup_v2` | Note |
 |---|---|---|
 | `cluster_id` | `cluster_id` | Point it at the `selectel_mks_cluster_v2` resource. |
-| `project_id` | — | Removed: the node group takes the project from the provider configuration. Set `project_id` in the provider or the `INFRA_PROJECT_ID` environment variable. |
+| `project_id` | — | Removed: the node group takes the project from the provider configuration. Set `project_id` in the provider or the `INFRA_PROJECT_ID` environment variable. It must equal the former `project_id` of each node group. |
 | `region` | — | Removed: the pool follows from `segment`. |
 | `availability_zone` | `segment` | |
 | `nodes_count` | `nodes_count` | |
 | `flavor_id`, `cpus`, `ram_mb`, `volume_gb`, `volume_type`, `local_volume`, `affinity_policy` | `cloud_nodegroup_config = { ... }` | The same names inside the nested attribute. |
 | `keypair_name` | — | Removed: API v2 ignores it. Remove it from the configuration. |
-| — | `cidr` | New, optional. Do not set it for an existing node group: changing it recreates the node group. |
+| — | `cidr` | For dedicated node groups only, which `selectel_mks_nodegroup_v2` does not support yet: setting it fails the plan. Do not set it. |
 | `labels` | `labels` | |
 | `taints { ... }` | `taints = [{ ... }]` | A list of objects instead of repeated blocks. |
 | `enable_autoscale`, `autoscale_min_nodes`, `autoscale_max_nodes` | the same | |
@@ -165,7 +165,7 @@ resource "selectel_mks_nodegroup_v2" "nodegroup_1" {
 
 1. In the configuration, replace every `selectel_mks_cluster_v1` and `selectel_mks_nodegroup_v1` resource with the equivalent `_v2` resource, as in the tables above. Keep the resource names, or use new ones in the `to` addresses.
 2. Add a `moved` block for the cluster and for each of its node groups. Move a cluster together with all its node groups in the same run.
-3. If the configuration has no provider-level `project_id`, add it, or set the `INFRA_PROJECT_ID` environment variable: `selectel_mks_nodegroup_v2` has no `project_id` argument.
+3. If the configuration has no provider-level `project_id`, add it, or set the `INFRA_PROJECT_ID` environment variable: `selectel_mks_nodegroup_v2` has no `project_id` argument. The provider project must equal the former `project_id` of each node group; otherwise the plan fails with `provider project ... is not the node group's project ... (moved from _v1)`.
 4. Run `terraform plan`. Every resource must show `has moved to` and no changes. If the plan shows changes, compare the `_v2` arguments with the cluster: the values that `_v1` kept in the state are now compared with the `_v2` configuration.
 5. Run `terraform apply` to save the moved state. No API changes are made.
 6. You can delete the `moved` blocks after every workspace that uses the configuration has applied them. A module used by others should keep them.
@@ -182,10 +182,11 @@ The move converts the `_v1` state without API calls. The values `_v1` never stor
 
 These stay empty, because the API does not return them:
 
-- `cloud_subnet_cidr` and `kubernetes_options.x509_ca_certificates` of the cluster;
-- `cidr` of the node group.
+- `cloud_subnet_cidr` and `kubernetes_options.x509_ca_certificates` of the cluster.
 
-`cloud_nodegroup_config.cpus`, `ram_mb` and `affinity_policy` keep the values the `_v1` state had. `keypair_name`, `enable_pod_security_policy`, `zonal`, `project_id` and `region` of the node group, and `timeouts` are dropped.
+`cloud_nodegroup_config.cpus`, `ram_mb` and `affinity_policy` keep the values the `_v1` state had.
+
+Dropped from the cluster: `enable_pod_security_policy`, `zonal`, `timeouts`. Dropped from the node group: `keypair_name`, `project_id`, `region`, `timeouts`.
 
 ## Remove and import (Terraform earlier than 1.8.0)
 
@@ -214,6 +215,6 @@ These stay empty, because the API does not return them:
    - in earlier versions, run `terraform state rm selectel_mks_nodegroup_v1.nodegroup_1 selectel_mks_cluster_v1.cluster_1`.
 2. Add the `_v2` resources to the configuration, as in the tables above.
 3. Import them with `import` blocks (Terraform 1.5.0 and later) or the `terraform import` command. See the **Import** sections of [selectel_mks_cluster_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/mks_cluster_v2) and [selectel_mks_nodegroup_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/mks_nodegroup_v2).
-4. Run `terraform plan`. It must show only the imports.
+4. Run `terraform plan`. It shows the imports and, for a node group that sets `cpus`, `ram_mb` or `affinity_policy`, an in-place update that only fills these values in the state, with no API change.
 
-An import, unlike a move, does not know `cloud_nodegroup_config.cpus`, `ram_mb`, `affinity_policy` and `cidr` of a node group: the API does not return them. After the import, setting them in the configuration fills the state on the next `terraform apply` and does not recreate the node group. `cloud_subnet_cidr` and `kubernetes_options.x509_ca_certificates` of the cluster stay empty.
+An import, unlike a move, does not know `cloud_nodegroup_config.cpus`, `ram_mb` and `affinity_policy` of a node group: the API does not return them. After the import, setting them in the configuration fills the state on the next `terraform apply` and does not recreate the node group. `cloud_subnet_cidr` and `kubernetes_options.x509_ca_certificates` of the cluster stay empty.

@@ -368,9 +368,17 @@ func TestMKSClusterV2ResourceKubeVersionUpgrade(t *testing.T) {
 				PlanOnly: true,
 			},
 			{
-				Config:      config("1.30.5"),
-				PlanOnly:    true,
-				ExpectError: testMKSClusterV2Error(`current version 1\.31\.4 can't be downgraded to version 1\.30\.5`),
+				// A lower version, of the same or a lower minor version, is
+				// accepted with no change, like in v1.
+				Config:   config("1.31.2"),
+				PlanOnly: true,
+			},
+			{
+				Config: config("1.30.5"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kube_version", "1.31.4"),
+					calls(1, 1),
+				),
 			},
 			{
 				Config:      config("1.33.1"),
@@ -580,7 +588,8 @@ func TestMKSClusterV2KubeVersion(t *testing.T) {
 		{name: "same version", prior: "1.30.3", actual: "1.30.3", want: "1.30.3"},
 		{name: "newer patch keeps the configured one", prior: "1.30.3", actual: "1.30.5", want: "1.30.3"},
 		{name: "older patch is drift", prior: "1.30.5", actual: "1.30.3", want: "1.30.3"},
-		{name: "other minor is drift", prior: "1.30.5", actual: "1.31.1", want: "1.31.1"},
+		{name: "newer minor keeps the configured one", prior: "1.30.5", actual: "1.31.1", want: "1.30.5"},
+		{name: "older minor is drift", prior: "1.31.1", actual: "1.30.5", want: "1.30.5"},
 	}
 
 	for _, tt := range tests {
@@ -694,6 +703,49 @@ func TestMKSClusterV2ResourceX509OnCreate(t *testing.T) {
 						return nil
 					},
 				),
+			},
+		},
+	})
+}
+
+func TestMKSClusterV2ResourceUpperCaseName(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+
+	config := strings.Replace(testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+`), `name = "tf-v2"`, `name = "TF-v2"`, 1)
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				// The API stores tf-v2; the state keeps the configured case,
+				// so the result is consistent and the next plan empty.
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "name", "TF-v2"),
+					func(_ *terraform.State) error {
+						body, _ := fake.lastBody(t, mksV2RouteCreateCluster)["cluster"].(map[string]any)
+						if body["name"] != "TF-v2" {
+							return fmt.Errorf("create sent name %v, want TF-v2", body["name"])
+						}
+
+						return nil
+					},
+				),
+			},
+			{
+				// Only the case changes: no replacement.
+				Config:   strings.Replace(config, `name = "TF-v2"`, `name = "tf-V2"`, 1),
+				PlanOnly: true,
+			},
+			{
+				Config:             strings.Replace(config, `name = "TF-v2"`, `name = "tf-v3"`, 1),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})

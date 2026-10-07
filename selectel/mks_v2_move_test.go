@@ -3,9 +3,11 @@ package selectel
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	ctyjson "github.com/hashicorp/go-cty/cty/json"
@@ -499,41 +501,58 @@ func testMKSV2SeedV1State(t *testing.T, resourceType, name string, attributes []
 
 // TestMKSClusterV2ResourceMovedFromV1 runs a moved block on a _v1 state and
 // the _v2 configuration of the same cluster: the move changes nothing in the
-// cluster, and the plan after it is empty.
+// cluster, and the plans before and after it are empty.
 func TestMKSClusterV2ResourceMovedFromV1(t *testing.T) {
 	testMKSV2TerraformAtLeast(t, 1, 8)
-	fake := newMKSV2Fake(t)
-	fake.seedCluster(mksclient.ClusterDetailed{
-		Id: testMKSV2ClusterID, Name: "tf-v2", Pool: testMKSV2Pool, ProjectId: "provider-project", KubeVersion: "1.30.3",
-		ClusterType: mksclient.HIGHAVAILABILITY, NetworkType: mksclient.ClusterDetailedNetworkTypeSTANDARD,
-		NetworkId: "net-1", SubnetId: "subnet-1", EnableAutorepair: true, EnablePatchVersionAutoUpgrade: true,
-		MaintenanceWindowStart: "01:00:00", MaintenanceWindowEnd: "03:00:00",
-		CniType: mksclient.ClusterDetailedCniType(mksclient.ClusterCniTypeCALICO), KubeApiIp: "192.0.2.10", Status: "ACTIVE",
-		KubernetesOptions: mksclient.KubernetesOptions{
-			FeatureGates: []string{"TopologyAwareHints"}, AuditLogs: mksclient.AuditLogs{Enabled: true},
-		},
-	}, "")
 
-	// The state _v1 left after a refresh of that cluster: zonal and no
-	// cluster_type, an OIDC block for a disabled OIDC.
-	v1 := map[string]any{
-		"name": "tf-v2", "project_id": "provider-project", "region": testMKSV2Pool, "kube_version": "1.30.3",
-		"enable_autorepair": true, "enable_patch_version_auto_upgrade": true, "enable_pod_security_policy": false,
-		"network_id": "net-1", "subnet_id": "subnet-1", "maintenance_window_start": "01:00:00", "maintenance_window_end": "03:00:00",
-		"zonal": false, "kube_api_ip": "192.0.2.10", "status": "ACTIVE", "feature_gates": []any{"TopologyAwareHints"},
-		"admission_controllers": []any{}, "private_kube_api": false, "cni_type": "CALICO", "enable_audit_logs": true,
-		"oidc": []any{map[string]any{"enabled": false}},
+	tests := []struct {
+		name string
+		// version is the one of the cluster and the _v1 state, which stores
+		// what the API reports.
+		version string
+		// configName and configVersion are the _v2 configuration. The
+		// upper-case case covers the plain move as well.
+		configName, configVersion string
+	}{
+		{name: "patch auto-upgraded past the configuration", version: "1.30.5", configName: "tf-v2", configVersion: "1.30.3"},
+		{name: "lower minor configured", version: "1.30.5", configName: "tf-v2", configVersion: "1.29.8"},
+		{name: "upper-case name configured", version: "1.30.3", configName: "TF-v2", configVersion: "1.30.3"},
 	}
-	seedState := testMKSV2SeedV1State(t, "selectel_mks_cluster_v1", "cluster_tf_test_1",
-		testMKSV1StateJSON(t, resourceMKSClusterV1(), testMKSV2ClusterID, v1))
 
-	config := `
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newMKSV2Fake(t)
+			fake.seedCluster(mksclient.ClusterDetailed{
+				Id: testMKSV2ClusterID, Name: "tf-v2", Pool: testMKSV2Pool, ProjectId: "provider-project", KubeVersion: tt.version,
+				ClusterType: mksclient.HIGHAVAILABILITY, NetworkType: mksclient.ClusterDetailedNetworkTypeSTANDARD,
+				NetworkId: "net-1", SubnetId: "subnet-1", EnableAutorepair: true, EnablePatchVersionAutoUpgrade: true,
+				MaintenanceWindowStart: "01:00:00", MaintenanceWindowEnd: "03:00:00",
+				CniType: mksclient.ClusterDetailedCniType(mksclient.ClusterCniTypeCALICO), KubeApiIp: "192.0.2.10", Status: "ACTIVE",
+				KubernetesOptions: mksclient.KubernetesOptions{
+					FeatureGates: []string{"TopologyAwareHints"}, AuditLogs: mksclient.AuditLogs{Enabled: true},
+				},
+			}, "")
+
+			// The state _v1 left after a refresh of that cluster: zonal and
+			// no cluster_type, an OIDC block for a disabled OIDC.
+			v1 := map[string]any{
+				"name": "tf-v2", "project_id": "provider-project", "region": testMKSV2Pool, "kube_version": tt.version,
+				"enable_autorepair": true, "enable_patch_version_auto_upgrade": true, "enable_pod_security_policy": false,
+				"network_id": "net-1", "subnet_id": "subnet-1", "maintenance_window_start": "01:00:00", "maintenance_window_end": "03:00:00",
+				"zonal": false, "kube_api_ip": "192.0.2.10", "status": "ACTIVE", "feature_gates": []any{"TopologyAwareHints"},
+				"admission_controllers": []any{}, "private_kube_api": false, "cni_type": "CALICO", "enable_audit_logs": true,
+				"oidc": []any{map[string]any{"enabled": false}},
+			}
+			seedState := testMKSV2SeedV1State(t, "selectel_mks_cluster_v1", "cluster_tf_test_1",
+				testMKSV1StateJSON(t, resourceMKSClusterV1(), testMKSV2ClusterID, v1))
+
+			config := `
 moved {
   from = selectel_mks_cluster_v1.cluster_tf_test_1
   to   = selectel_mks_cluster_v2.cluster_tf_test_1
 }
-` + testMKSClusterV2Config(testMKSClusterV2ProviderConfig("provider-project", testMKSV2Pool), `
-  kube_version             = "1.30.3"
+` + strings.Replace(testMKSClusterV2Config(testMKSClusterV2ProviderConfig("provider-project", testMKSV2Pool), fmt.Sprintf(`
+  kube_version             = %q
   workers_type             = "CLOUD"
   maintenance_window_start = "01:00:00"
   kubernetes_options = {
@@ -542,29 +561,38 @@ moved {
       enabled = true
     }
   }
-`)
+`, tt.configVersion)), `name = "tf-v2"`, fmt.Sprintf(`name = %q`, tt.configName), 1)
 
-	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: fake.providerFactories(),
-		CheckDestroy:             testMKSClusterV2Destroyed(fake),
-		Steps: []resource.TestStep{
-			{
-				PreConfig: seedState,
-				Config:    config,
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttr(testMKSClusterV2Name, "id", testMKSV2ClusterID),
-					resource.TestCheckResourceAttr(testMKSClusterV2Name, "cluster_type", "HIGH_AVAILABILITY"),
-					resource.TestCheckResourceAttr(testMKSClusterV2Name, "workers_type", "CLOUD"),
-					resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", "provider-project"),
-					testMKSV2NoResource("selectel_mks_cluster_v1.cluster_tf_test_1"),
-					testMKSClusterV2Calls(fake, map[string]int{
-						mksV2RouteCreateCluster: 0, mksV2RoutePatchCluster: 0, mksV2RouteDeleteCluster: 0,
-						mksV2RouteUpgradePatch: 0, mksV2RouteUpgradeMinor: 0,
-					}),
-				),
-			},
-		},
-	})
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy:             testMKSClusterV2Destroyed(fake),
+				Steps: []resource.TestStep{
+					{
+						// The first plan after the move is empty.
+						PreConfig: seedState,
+						Config:    config,
+						PlanOnly:  true,
+					},
+					{
+						Config: config,
+						Check: resource.ComposeTestCheckFunc(
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "id", testMKSV2ClusterID),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "name", "tf-v2"),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "kube_version", tt.version),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "cluster_type", "HIGH_AVAILABILITY"),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "workers_type", "CLOUD"),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", "provider-project"),
+							testMKSV2NoResource("selectel_mks_cluster_v1.cluster_tf_test_1"),
+							testMKSClusterV2Calls(fake, map[string]int{
+								mksV2RouteCreateCluster: 0, mksV2RoutePatchCluster: 0, mksV2RouteDeleteCluster: 0,
+								mksV2RouteUpgradePatch: 0, mksV2RouteUpgradeMinor: 0,
+							}),
+						),
+					},
+				},
+			})
+		})
+	}
 }
 
 // TestMKSNodegroupV2ResourceMovedFromV1 is the same for a node group.
@@ -616,8 +644,13 @@ moved {
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
+				// The first plan after the move is empty.
 				PreConfig: seedState,
 				Config:    config,
+				PlanOnly:  true,
+			},
+			{
+				Config: config,
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "id", testMKSNodegroupV2ID),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "segment", "ru-7a"),
@@ -628,6 +661,76 @@ moved {
 						mksV2RouteResizeNodegroup: 0,
 					}),
 				),
+			},
+		},
+	})
+}
+
+// TestMKSNodegroupV2ResourceMovedFromV1OtherProject moves a node group whose
+// _v1 project_id is not the provider project: mk-api-v2 answers 404 for it,
+// which must fail the plan instead of planning a new node group.
+func TestMKSNodegroupV2ResourceMovedFromV1OtherProject(t *testing.T) {
+	testMKSV2TerraformAtLeast(t, 1, 8)
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+	fake.seedNodegroup(mksclient.NodegroupDetailed{
+		Id: "ng-1", ClusterId: testMKSV2ClusterID, Segment: "ru-7a", Status: "ACTIVE", NodegroupType: "STANDARD",
+		Nodes:                mksV2FakeNodes("ng-1", 1),
+		CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{FlavorId: "1013", VolumeGb: 20, VolumeType: "fast.ru-7a"},
+	})
+	// The fake has no projects: the 404 stands in for the cluster of
+	// another project.
+	fake.fail(mksV2RouteNodegroup, http.StatusNotFound)
+
+	v1 := map[string]any{
+		"cluster_id": testMKSV2ClusterID, "project_id": "other-project", "status": "ACTIVE", "region": testMKSV2Pool,
+		"availability_zone": "ru-7a", "nodes_count": 1, "cpus": 0, "ram_mb": 0, "volume_gb": 20,
+		"volume_type": "fast.ru-7a", "local_volume": false, "flavor_id": "1013",
+		"enable_autoscale": false, "autoscale_min_nodes": 0, "autoscale_max_nodes": 0, "user_data": "",
+		"install_nvidia_device_plugin": false, "preemptible": false, "nodegroup_type": "STANDARD",
+	}
+	seedState := testMKSV2SeedV1State(t, "selectel_mks_nodegroup_v1", "nodegroup_tf_test_1",
+		testMKSV1StateJSON(t, resourceMKSNodegroupV1(), testMKSNodegroupV2ID, v1))
+
+	config := `
+moved {
+  from = selectel_mks_nodegroup_v1.nodegroup_tf_test_1
+  to   = selectel_mks_nodegroup_v2.nodegroup_tf_test_1
+}
+` + testMKSNodegroupV2Config(`
+  nodes_count = 1
+  cloud_nodegroup_config = {
+    flavor_id   = "1013"
+    volume_gb   = 20
+    volume_type = "fast.ru-7a"
+  }
+`)
+
+	resource.UnitTest(t, resource.TestCase{
+		// The last step leaves nothing in the state to destroy.
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		Steps: []resource.TestStep{
+			{
+				PreConfig: seedState,
+				Config:    config,
+				PlanOnly:  true,
+				ExpectError: testMKSClusterV2Error(`provider project "provider-project" is not the node group's project ` +
+					`"other-project" \(moved from _v1\): set project_id of the provider to "other-project"`),
+			},
+			{
+				// The move goes through once the node group is found, and
+				// its first read clears the mark.
+				PreConfig: func() { fake.fail(mksV2RouteNodegroup, 0) },
+				Config:    config,
+				Check:     testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateNodegroups: 0}),
+			},
+			{
+				// A 404 then means the node group is gone: the refresh drops
+				// it and the plan creates one.
+				PreConfig:          func() { fake.fail(mksV2RouteNodegroup, http.StatusNotFound) },
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})

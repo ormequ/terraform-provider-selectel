@@ -18,10 +18,16 @@ type testFrameworkProvider struct {
 	*frameworkProvider
 }
 
+// DataSources adds the data sources that only tests serve: the mux check and
+// the _v2 MKS ones until the provider registers them.
 func (p testFrameworkProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
-	return append(p.frameworkProvider.DataSources(ctx), func() datasource.DataSource {
-		return &muxTestDataSource{}
-	})
+	return append(p.frameworkProvider.DataSources(ctx),
+		func() datasource.DataSource { return &muxTestDataSource{} },
+		newMKSKubeconfigV2DataSource,
+		newMKSKubeVersionsV2DataSource,
+		newMKSFeatureGatesV2DataSource,
+		newMKSAdmissionControllersV2DataSource,
+	)
 }
 
 type muxTestDataSource struct {
@@ -98,6 +104,7 @@ func TestProviderServerSchema(t *testing.T) {
 			assert.Empty(t, resp.Diagnostics)
 			assert.Contains(t, resp.ResourceSchemas, "selectel_vpc_project_v2")
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_mux_test")
+			assert.Contains(t, resp.DataSourceSchemas, "selectel_mks_kubeconfig_v2")
 		})
 	}
 }

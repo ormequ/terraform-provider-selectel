@@ -9,7 +9,7 @@ import (
 	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,8 +35,6 @@ func (d *muxTestDataSource) Metadata(_ context.Context, req datasource.MetadataR
 func (d *muxTestDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = dsschema.Schema{
 		Attributes: map[string]dsschema.Attribute{
-			// SDKv2 helper/resource refuses state without an id.
-			"id":       dsschema.StringAttribute{Computed: true},
 			"username": dsschema.StringAttribute{Computed: true},
 		},
 	}
@@ -47,13 +45,12 @@ func (d *muxTestDataSource) Configure(_ context.Context, req datasource.Configur
 }
 
 func (d *muxTestDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
-	if d.config == nil {
-		resp.Diagnostics.AddError("Provider not configured", "The data source got no *Config from the framework provider.")
+	if d.config == nil || d.config != cfgSingletone {
+		resp.Diagnostics.AddError("Config not shared", "The data source did not get the Config the SDKv2 provider uses.")
 
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), "mux_test")...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("username"), d.config.Username)...)
 }
 
@@ -107,14 +104,47 @@ func TestProviderServerSchema(t *testing.T) {
 
 func TestFrameworkProviderSharesConfig(t *testing.T) {
 	setTestProviderEnv(t)
+	ctx := context.Background()
 
-	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config: `data "selectel_mux_test" "test" {}`,
-				Check:  resource.TestCheckResourceAttr("data.selectel_mux_test.test", "username", os.Getenv("OS_USERNAME")),
-			},
-		},
+	server, err := testAccProtoV6ProviderFactories["selectel"]()
+	require.NoError(t, err)
+
+	schemas, err := server.GetProviderSchema(ctx, &tfprotov6.GetProviderSchemaRequest{})
+	require.NoError(t, err)
+
+	configured, err := server.ConfigureProvider(ctx, &tfprotov6.ConfigureProviderRequest{Config: nullConfig(t, schemas.Provider)})
+	require.NoError(t, err)
+	require.Empty(t, configured.Diagnostics)
+
+	dataSource := schemas.DataSourceSchemas["selectel_mux_test"]
+	read, err := server.ReadDataSource(ctx, &tfprotov6.ReadDataSourceRequest{
+		TypeName: "selectel_mux_test",
+		Config:   nullConfig(t, dataSource),
 	})
+	require.NoError(t, err)
+	require.Empty(t, read.Diagnostics)
+
+	state, err := read.State.Unmarshal(dataSource.ValueType())
+	require.NoError(t, err)
+	var attrs map[string]tftypes.Value
+	require.NoError(t, state.As(&attrs))
+	var username string
+	require.NoError(t, attrs["username"].As(&username))
+	assert.Equal(t, os.Getenv("OS_USERNAME"), username)
+}
+
+// nullConfig is a configuration that sets none of the schema's attributes.
+func nullConfig(t *testing.T, s *tfprotov6.Schema) *tfprotov6.DynamicValue {
+	t.Helper()
+
+	typ, ok := s.ValueType().(tftypes.Object)
+	require.True(t, ok)
+	attrs := make(map[string]tftypes.Value, len(typ.AttributeTypes))
+	for name, attrType := range typ.AttributeTypes {
+		attrs[name] = tftypes.NewValue(attrType, nil)
+	}
+	value, err := tfprotov6.NewDynamicValue(typ, tftypes.NewValue(typ, attrs))
+	require.NoError(t, err)
+
+	return &value
 }

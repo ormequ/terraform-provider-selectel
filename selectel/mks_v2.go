@@ -25,9 +25,9 @@ import (
 	"github.com/selectel/mks-go/v2/pkg/task"
 )
 
-// mksV2ClientFn builds the mk-api-v2 client for every _v2 resource and data
-// source. Tests replace it with a client of a fake server.
-var mksV2ClientFn = newMKSV2Client
+// mksV2ClientFunc builds the mk-api-v2 client for every _v2 resource and
+// data source.
+type mksV2ClientFunc func(ctx context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error)
 
 func newMKSV2Client(_ context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error) {
 	selvpcClient, err := config.GetSelVPCClientWithProjectScope(projectID)
@@ -127,7 +127,11 @@ func (p *mksV2Provided) client(ctx context.Context, projectIDAttr types.String, 
 		return nil, "", diags
 	}
 
-	client, err := mksV2ClientFn(ctx, p.config, projectID, pool)
+	clientFn := newMKSV2Client
+	if p.config.mksV2Client != nil {
+		clientFn = p.config.mksV2Client
+	}
+	client, err := clientFn(ctx, p.config, projectID, pool)
 	if err != nil {
 		diags.AddError("Error initializing MKS client", err.Error())
 

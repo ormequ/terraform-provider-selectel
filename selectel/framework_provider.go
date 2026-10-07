@@ -22,6 +22,9 @@ import (
 type frameworkProvider struct {
 	sdk     *sdkschema.Provider
 	version string
+	// configFn replaces newConfig when set, which only tests do: each test
+	// provider then gets a Config of its own.
+	configFn func(userAgent string, attr func(key string) string) *Config
 }
 
 var _ provider.Provider = &frameworkProvider{}
@@ -76,7 +79,11 @@ func (p *frameworkProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 func (p *frameworkProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
 	// UserAgent reads it; the SDKv2 Configure sets it only when it runs first.
 	p.sdk.TerraformVersion = req.TerraformVersion
-	config := newConfig(p.sdk.UserAgent(version.ProviderName, p.version), func(key string) string {
+	configFn := newConfig
+	if p.configFn != nil {
+		configFn = p.configFn
+	}
+	config := configFn(p.sdk.UserAgent(version.ProviderName, p.version), func(key string) string {
 		var v types.String
 		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root(key), &v)...)
 		if v.IsNull() {

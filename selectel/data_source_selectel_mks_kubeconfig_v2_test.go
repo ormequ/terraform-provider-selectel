@@ -38,13 +38,13 @@ users:
 )
 
 func TestMKSKubeconfigV2DataSourceBasic(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.seedCluster(mksclient.ClusterDetailed{Id: testMKSV2ClusterID, Name: "tf-v2"}, testMKSKubeconfigV2)
 
 	dataSourceName := "data.selectel_mks_kubeconfig_v2.kubeconfig_tf_test_1"
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		Steps: []resource.TestStep{
 			{
 				Config: testMKSKubeconfigV2Basic("", "attribute-project"),
@@ -66,12 +66,12 @@ func TestMKSKubeconfigV2DataSourceBasic(t *testing.T) {
 }
 
 func TestMKSKubeconfigV2DataSourceProviderProjectID(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.seedCluster(mksclient.ClusterDetailed{Id: testMKSV2ClusterID}, testMKSKubeconfigV2)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		Steps: []resource.TestStep{
 			{
 				Config: testMKSKubeconfigV2Basic("provider-project", ""),
@@ -85,6 +85,8 @@ func TestMKSKubeconfigV2DataSourceProviderProjectID(t *testing.T) {
 }
 
 func TestMKSKubeconfigV2DataSourceAPIErrors(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		setup     func(f *mksV2Fake)
@@ -107,12 +109,12 @@ func TestMKSKubeconfigV2DataSourceAPIErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			tt.setup(fake)
 
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps: []resource.TestStep{
 					{
 						Config:      testMKSKubeconfigV2Basic("", "attribute-project"),
@@ -124,18 +126,9 @@ func TestMKSKubeconfigV2DataSourceAPIErrors(t *testing.T) {
 	}
 }
 
-// testMKSV2ProviderConfig sets the provider project_id when it is not empty;
-// the credentials come from the environment.
+// testMKSV2ProviderConfig is the provider with project_id and no region.
 func testMKSV2ProviderConfig(providerProjectID string) string {
-	if providerProjectID == "" {
-		return ""
-	}
-
-	return fmt.Sprintf(`
-provider "selectel" {
-  project_id = %q
-}
-`, providerProjectID)
+	return testMKSClusterV2ProviderConfig(providerProjectID, "")
 }
 
 // testMKSV2ProjectIDArgument renders the project_id argument of a data source.

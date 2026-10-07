@@ -8,7 +8,7 @@ description: |-
 
 Creates and manages a Managed Kubernetes cluster using API v2. For more information about Managed Kubernetes, see the [official Selectel documentation](https://docs.selectel.ru/en/cloud/managed-kubernetes/).
 
-The resource waits for the cluster tasks of every operation. When a task fails, the operation fails with the task type, ID and error details.
+The resource waits for the cluster tasks of every operation. When a task fails, the operation fails with the task type, ID and error details. When a `kubernetes_options` or `cni_cilium_settings` task fails, the API has already recorded the new values, so the next plan shows no change; check `status`.
 
 ## Example Usage
 
@@ -99,7 +99,7 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
     * `enabled` - (Optional) Enables or disables collection of audit logs.
 
-    * `secret_name` - (Optional) Name of the secret in the `kube-system` namespace with the credentials of the logging system.
+    * `secret_name` - (Optional) Name of the secret in the `kube-system` namespace with the credentials of the logging system. The API does not apply a change of only this field.
 
   * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection). Disabling OIDC clears its other settings in the cluster; they can stay in the configuration and are sent again when OIDC is enabled.
 
@@ -117,7 +117,7 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
     * `ca_certs` - (Optional) CA certificates of the OIDC provider in the PEM format. Leading and trailing whitespace is ignored.
 
-  * `x509_ca_certificates` - (Optional) Custom X509 CA certificates for the cluster components, base64-encoded. The API does not return them, so an imported cluster has no value.
+  * `x509_ca_certificates` - (Optional) Custom X509 CA certificates for the cluster components, base64-encoded. The API does not return them, so an imported cluster has no value. If setting them fails after the cluster is created, the apply ends with a warning and the next apply sets them.
 
 * `timeouts` - (Optional) Timeouts of the `create`, `update` and `delete` operations, for example, `30m`. The default value of each is `60m`.
 

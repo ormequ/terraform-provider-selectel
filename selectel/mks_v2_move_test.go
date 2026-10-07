@@ -502,7 +502,6 @@ func testMKSV2SeedV1State(t *testing.T, resourceType, name string, attributes []
 // cluster, and the plan after it is empty.
 func TestMKSClusterV2ResourceMovedFromV1(t *testing.T) {
 	testMKSV2TerraformAtLeast(t, 1, 8)
-	useMKSV2TestConfig(t)
 	fake := newMKSV2Fake(t)
 	fake.seedCluster(mksclient.ClusterDetailed{
 		Id: testMKSV2ClusterID, Name: "tf-v2", Pool: testMKSV2Pool, ProjectId: "provider-project", KubeVersion: "1.30.3",
@@ -546,7 +545,7 @@ moved {
 `)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -571,7 +570,6 @@ moved {
 // TestMKSNodegroupV2ResourceMovedFromV1 is the same for a node group.
 func TestMKSNodegroupV2ResourceMovedFromV1(t *testing.T) {
 	testMKSV2TerraformAtLeast(t, 1, 8)
-	useMKSV2TestConfig(t)
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 	fake.seedNodegroup(mksclient.NodegroupDetailed{
@@ -614,7 +612,7 @@ moved {
 `)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -639,8 +637,7 @@ moved {
 // carries the identity: project and pool come from it, not from the provider.
 func TestMKSClusterV2ResourceImportByIdentity(t *testing.T) {
 	testMKSV2TerraformAtLeast(t, 1, 12)
-	useMKSV2TestConfig(t)
-	t.Setenv("INFRA_REGION", "")
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.seedCluster(mksclient.ClusterDetailed{
 		Id: testMKSV2ClusterID, Name: "tf-v2", Pool: testMKSV2Pool, ProjectId: "identity-project", KubeVersion: "1.30.3",
@@ -659,16 +656,14 @@ import {
     pool       = %q
   }
 }
-`, testMKSClusterV2Name, testMKSV2ClusterID, testMKSV2Pool) + testMKSClusterV2Config(`
-provider "selectel" {}
-`, `
+`, testMKSClusterV2Name, testMKSV2ClusterID, testMKSV2Pool) + testMKSClusterV2Config("", `
   project_id   = "identity-project"
   kube_version = "1.30.3"
   workers_type = "CLOUD"
 `)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -691,8 +686,7 @@ provider "selectel" {}
 // pool comes from it, the project from the provider.
 func TestMKSNodegroupV2ResourceImportByIdentity(t *testing.T) {
 	testMKSV2TerraformAtLeast(t, 1, 12)
-	useMKSV2TestConfig(t)
-	t.Setenv("INFRA_REGION", "")
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 	fake.seedNodegroup(mksclient.NodegroupDetailed{
@@ -713,7 +707,7 @@ import {
 `, testMKSNodegroupV2Name, testMKSV2ClusterID, testMKSV2Pool) + testMKSNodegroupV2Config(testMKSNodegroupV2Flavor)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{

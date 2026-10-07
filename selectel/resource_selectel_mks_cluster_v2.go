@@ -177,7 +177,9 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 	}
 
 	resp.Schema = schema.Schema{
-		Description: "Creates and manages a Managed Kubernetes cluster using API v2.",
+		Description: "Creates and manages a Managed Kubernetes cluster using API v2. " +
+			"When a `kubernetes_options` or `cni_cilium_settings` task fails, the API has already recorded the new values, " +
+			"so the next plan shows no change; check `status`.",
 		Attributes: mksClusterV2Docs.withFrameworkDocsHints(map[string]schema.Attribute{
 			"id": mksClusterV2Docs.idFrameworkResourceSchema(),
 			"name": schema.StringAttribute{
@@ -307,7 +309,7 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 						Attributes: map[string]schema.Attribute{
 							"enabled": optionalBool("Enables collection of audit logs."),
 							"secret_name": optionalString("Name of the secret in the `kube-system` namespace " +
-								"with the credentials of the logging system."),
+								"with the credentials of the logging system. The API does not apply a change of only this field."),
 						},
 					},
 					"oidc": schema.SingleNestedAttribute{
@@ -337,7 +339,8 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 					"x509_ca_certificates": schema.StringAttribute{
 						Optional: true,
 						Description: "Custom X509 CA certificates for the cluster components, base64-encoded. " +
-							"The API does not return them, so an imported cluster has no value.",
+							"The API does not return them, so an imported cluster has no value. If setting them fails " +
+							"after the cluster is created, the apply ends with a warning and the next apply sets them.",
 					},
 				},
 			},
@@ -499,15 +502,24 @@ func (r *mksClusterV2Resource) Create(ctx context.Context, req resource.CreateRe
 	x509Err := applyMKSClusterV2X509(ctx, client, &state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 	if x509Err != nil {
-		resp.Diagnostics.AddError("Error setting X509 CA certificates of the cluster", errUpdatingObject(objectCluster, created.Id, x509Err).Error())
+		// An error would taint the healthy cluster just created. The state
+		// keeps the planned value, which Terraform requires, and the mark
+		// makes the next refresh drop it, so the next apply sends it.
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksClusterV2X509PendingKey, []byte("true"))...)
+		resp.Diagnostics.AddWarning("X509 CA certificates of the cluster are not set",
+			"The cluster is created, but setting x509_ca_certificates failed, so the next plan shows them "+
+				"and the next apply sets them: "+errUpdatingObject(objectCluster, created.Id, x509Err).Error())
 	}
 }
+
+// mksClusterV2X509PendingKey marks a created cluster whose
+// x509_ca_certificates failed to be set.
+const mksClusterV2X509PendingKey = "x509_pending"
 
 // applyMKSClusterV2X509 sends the planned x509_ca_certificates of a created
 // cluster: mk-api-v2 ignores them on create and stores them only on PATCH.
 // The PATCH carries the whole kubernetes_options, because the API replaces
-// them. On error x509_ca_certificates is null in state, since the cluster has
-// none.
+// them. On error the state is left as planned.
 func applyMKSClusterV2X509(ctx context.Context, client *mksv2.ServiceClient, state *mksClusterV2Model) error {
 	var options mksClusterV2KubeOptionsModel
 	diags := state.KubernetesOptions.As(ctx, &options, basetypes.ObjectAsOptions{})
@@ -533,12 +545,6 @@ func applyMKSClusterV2X509(ctx context.Context, client *mksv2.ServiceClient, sta
 		got, err = cluster.Get(ctx, client, clusterID)
 	}
 	if err != nil {
-		options.X509CACertificates = types.StringNull()
-		state.KubernetesOptions, diags = types.ObjectValueFrom(ctx, mksClusterV2KubeOptionsAttrTypes, options)
-		if diags.HasError() {
-			return errors.Join(err, fmt.Errorf("error saving kubernetes_options: %v", diags))
-		}
-
 		return err
 	}
 
@@ -578,8 +584,33 @@ func (r *mksClusterV2Resource) Read(ctx context.Context, req resource.ReadReques
 
 	prior := state
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, prior, false)...)
+	pending, diags := req.Private.GetKey(ctx, mksClusterV2X509PendingKey)
+	resp.Diagnostics.Append(diags...)
+	if len(pending) > 0 {
+		// The cluster has none, see Create.
+		state.KubernetesOptions, diags = mksClusterV2WithoutX509(ctx, state.KubernetesOptions)
+		resp.Diagnostics.Append(diags...)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
+}
+
+// mksClusterV2WithoutX509 returns the kubernetes_options with null
+// x509_ca_certificates.
+func mksClusterV2WithoutX509(ctx context.Context, kubeOptions types.Object) (types.Object, diag.Diagnostics) {
+	if kubeOptions.IsNull() || kubeOptions.IsUnknown() {
+		return kubeOptions, nil
+	}
+	var options mksClusterV2KubeOptionsModel
+	diags := kubeOptions.As(ctx, &options, basetypes.ObjectAsOptions{})
+	if diags.HasError() {
+		return kubeOptions, diags
+	}
+	options.X509CACertificates = types.StringNull()
+	withoutX509, d := types.ObjectValueFrom(ctx, mksClusterV2KubeOptionsAttrTypes, options)
+	diags.Append(d...)
+
+	return withoutX509, diags
 }
 
 func (r *mksClusterV2Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -635,6 +666,8 @@ func (r *mksClusterV2Resource) Update(ctx context.Context, req resource.UpdateRe
 	resp.Diagnostics.Append(plan.fromAPI(ctx, got, plan, true)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 	resp.Diagnostics.Append(plan.setIdentity(ctx, resp.Identity)...)
+	// The plan carried any pending x509_ca_certificates, see Create.
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksClusterV2X509PendingKey, nil)...)
 }
 
 func (r *mksClusterV2Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

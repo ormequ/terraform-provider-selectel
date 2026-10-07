@@ -11,6 +11,8 @@ import (
 )
 
 func TestMKSAdmissionControllersV2DataSource(t *testing.T) {
+	t.Parallel()
+
 	admissionControllers := []mksclient.AvailableAdmissionControllers{
 		{KubeVersionMinor: new("1.30"), Names: &[]string{"NodeRestriction", "PodSecurity"}},
 		{KubeVersionMinor: new("1.31"), Names: &[]string{"NodeRestriction", "PodSecurity", "AlwaysPullImages"}},
@@ -77,7 +79,7 @@ func TestMKSAdmissionControllersV2DataSource(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			fake.seedAdmissionControllers(admissionControllers...)
 			if tt.failStatus != 0 {
@@ -85,7 +87,7 @@ func TestMKSAdmissionControllersV2DataSource(t *testing.T) {
 			}
 
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps: []resource.TestStep{
 					{
 						Config:      testKubeOptionsV2Config(dataSourceAdmissionControllersV2, tt.providerProjectID, tt.projectID, tt.filter),

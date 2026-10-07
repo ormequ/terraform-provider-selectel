@@ -18,7 +18,7 @@ import (
 const testMKSClusterV2Name = "selectel_mks_cluster_v2.cluster_tf_test_1"
 
 func TestMKSClusterV2ResourceBasic(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	// A cluster operation must not wait for nodegroup tasks; if it did, the
 	// short create timeout would fail the apply.
@@ -46,7 +46,7 @@ func TestMKSClusterV2ResourceBasic(t *testing.T) {
   }
 `)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -100,6 +100,8 @@ func TestMKSClusterV2ResourceBasic(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceWorkersType(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		workersType string
 		networkType string
@@ -110,11 +112,11 @@ func TestMKSClusterV2ResourceWorkersType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.workersType, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				CheckDestroy:             testMKSClusterV2Destroyed(fake),
 				Steps: []resource.TestStep{
 					{
@@ -138,12 +140,12 @@ func TestMKSClusterV2ResourceWorkersType(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceCreateTaskError(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.failTasks("CREATE_CLUSTER", true)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -160,7 +162,7 @@ func TestMKSClusterV2ResourceCreateTaskError(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceKubernetesOptionsSentWhole(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := func(admissionControllers string) string {
@@ -186,7 +188,7 @@ func TestMKSClusterV2ResourceKubernetesOptionsSentWhole(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -222,7 +224,7 @@ func TestMKSClusterV2ResourceKubernetesOptionsSentWhole(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceAutoUpgradeFalse(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := func(autoUpgrade bool) string {
@@ -240,7 +242,7 @@ func TestMKSClusterV2ResourceAutoUpgradeFalse(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -266,7 +268,7 @@ func TestMKSClusterV2ResourceAutoUpgradeFalse(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceBasicClusterAutoUpgrade(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := func(autoUpgrade string) string {
@@ -279,7 +281,7 @@ func TestMKSClusterV2ResourceBasicClusterAutoUpgrade(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -303,7 +305,7 @@ func TestMKSClusterV2ResourceBasicClusterAutoUpgrade(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceKubeVersionUpgrade(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.seedKubeVersions(
 		mksclient.KubeVersionInfo{Version: new("1.30.3")},
@@ -331,7 +333,7 @@ func TestMKSClusterV2ResourceKubeVersionUpgrade(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -380,12 +382,11 @@ func TestMKSClusterV2ResourceKubeVersionUpgrade(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceImport(t *testing.T) {
-	useMKSV2TestConfig(t)
-	t.Setenv("INFRA_REGION", "")
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -414,6 +415,8 @@ func TestMKSClusterV2ResourceImport(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceImportNeedsProviderConfig(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		providerConfig string
@@ -433,12 +436,11 @@ func TestMKSClusterV2ResourceImportNeedsProviderConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
-			t.Setenv("INFRA_REGION", "")
-			newMKSV2Fake(t)
+			t.Parallel()
+			fake := newMKSV2Fake(t)
 
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps: []resource.TestStep{
 					{
 						Config: testMKSClusterV2Config(tt.providerConfig, `
@@ -458,7 +460,7 @@ func TestMKSClusterV2ResourceImportNeedsProviderConfig(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceRemovedOutside(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := testMKSClusterV2Config("", `
@@ -467,7 +469,7 @@ func TestMKSClusterV2ResourceRemovedOutside(t *testing.T) {
   workers_type = "CLOUD"
 `)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -484,7 +486,7 @@ func TestMKSClusterV2ResourceRemovedOutside(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceDeleteTaskError(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := testMKSClusterV2Config("", `
@@ -493,7 +495,7 @@ func TestMKSClusterV2ResourceDeleteTaskError(t *testing.T) {
   workers_type = "CLOUD"
 `)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -592,6 +594,8 @@ func TestMKSClusterV2KubeVersion(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceCreateTimeout(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		// readFails makes the read after the wait fail too.
@@ -604,7 +608,7 @@ func TestMKSClusterV2ResourceCreateTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			fake.stickTasks("CREATE_CLUSTER", true)
 			if tt.readFails {
@@ -620,7 +624,7 @@ func TestMKSClusterV2ResourceCreateTimeout(t *testing.T) {
   }
 `)
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				CheckDestroy:             testMKSClusterV2Destroyed(fake),
 				Steps: []resource.TestStep{
 					{
@@ -652,11 +656,11 @@ func TestMKSClusterV2ResourceCreateTimeout(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceX509OnCreate(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -695,8 +699,82 @@ func TestMKSClusterV2ResourceX509OnCreate(t *testing.T) {
 	})
 }
 
+func TestMKSClusterV2ResourceX509OnCreateFails(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	// Like a cluster that entered its maintenance window during the create:
+	// mk-api-v2 PATCH accepts only ACTIVE clusters.
+	fake.fail(mksV2RoutePatchCluster, http.StatusConflict)
+
+	config := testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  kubernetes_options = {
+    feature_gates        = ["TopologyAwareHints"]
+    x509_ca_certificates = "Y2VydA=="
+  }
+`)
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				// The create succeeds with a warning; the refresh after it
+				// finds no x509 on the cluster, so the plan shows them.
+				Config:             config,
+				ExpectNonEmptyPlan: true,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "id", testMKSV2ClusterID),
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateCluster: 1, mksV2RoutePatchCluster: 1}),
+				),
+			},
+			{
+				// The plan after it shows only the x509 in kubernetes_options
+				// and the status every update makes unknown.
+				RefreshState:       true,
+				ExpectNonEmptyPlan: true,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckNoResourceAttr(testMKSClusterV2Name, "kubernetes_options.x509_ca_certificates"),
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.feature_gates.0", "TopologyAwareHints"),
+				),
+			},
+			{
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				// The cluster was not tainted: the next apply only PATCHes
+				// the x509.
+				PreConfig: func() { fake.fail(mksV2RoutePatchCluster, 0) },
+				Config:    config,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.x509_ca_certificates", "Y2VydA=="),
+					testMKSClusterV2Calls(fake, map[string]int{
+						mksV2RouteCreateCluster: 1, mksV2RouteDeleteCluster: 0, mksV2RoutePatchCluster: 2,
+					}),
+					func(_ *terraform.State) error {
+						body, _ := fake.lastBody(t, mksV2RoutePatchCluster)["cluster"].(map[string]any)
+						options, _ := body["kubernetes_options"].(map[string]any)
+						if len(body) != 1 || options["x509_ca_certificates"] != "Y2VydA==" {
+							return fmt.Errorf("PATCH sent %v, want only kubernetes_options with x509", body)
+						}
+						stored := fake.storedX509(testMKSV2ClusterID)
+						if stored != "Y2VydA==" {
+							return fmt.Errorf("the API stored x509 %q, want Y2VydA==", stored)
+						}
+
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 func TestMKSClusterV2ResourceOIDCCACertsWhitespace(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := func(caCerts string) string {
@@ -728,7 +806,7 @@ func TestMKSClusterV2ResourceOIDCCACertsWhitespace(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -751,7 +829,7 @@ func TestMKSClusterV2ResourceOIDCCACertsWhitespace(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := func(enabled bool) string {
@@ -772,7 +850,7 @@ func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -812,7 +890,7 @@ func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceStatusOnUpdate(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 
 	config := func(admissionControllers string, hubbleRelay bool) string {
@@ -836,7 +914,7 @@ func TestMKSClusterV2ResourceStatusOnUpdate(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -864,6 +942,8 @@ func TestMKSClusterV2ResourceStatusOnUpdate(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceCiliumSettingsNeedCilium(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		cniType string
@@ -874,11 +954,11 @@ func TestMKSClusterV2ResourceCiliumSettingsNeedCilium(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps: []resource.TestStep{
 					{
 						Config: testMKSClusterV2Config("", `
@@ -904,7 +984,7 @@ func TestMKSClusterV2ResourceCiliumSettingsNeedCilium(t *testing.T) {
 }
 
 func TestMKSClusterV2ResourceUpdateTaskError(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.seedKubeVersions(
 		mksclient.KubeVersionInfo{Version: new("1.30.3")},
@@ -923,7 +1003,7 @@ func TestMKSClusterV2ResourceUpdateTaskError(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
@@ -1060,16 +1140,30 @@ func testMKSClusterV2Error(pattern string) *regexp.Regexp {
 	return regexp.MustCompile(strings.ReplaceAll(pattern, " ", `\s+`))
 }
 
+// testMKSClusterV2ProviderConfig sets every provider argument, so a test reads
+// nothing from the environment and needs no t.Setenv, which t.Parallel
+// forbids.
 func testMKSClusterV2ProviderConfig(projectID, region string) string {
 	return fmt.Sprintf(`
 provider "selectel" {
-  project_id = %q
-  region     = %q
+  project_id  = %q
+  region      = %q
+  auth_url    = "test"
+  auth_region = "test"
+  domain_name = "test"
+  username    = "test"
+  password    = "test"
 }
 `, projectID, region)
 }
 
+// testMKSClusterV2Config is the cluster with providerConfig, or with a
+// provider without project and region when it is empty.
 func testMKSClusterV2Config(providerConfig, attributes string) string {
+	if providerConfig == "" {
+		providerConfig = testMKSClusterV2ProviderConfig("", "")
+	}
+
 	return fmt.Sprintf(`
 %s
 

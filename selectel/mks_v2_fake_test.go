@@ -17,12 +17,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
 )
 
 // mksV2Fake is an in-memory mk-api-v2 behind httptest.Server. Tests seed it,
-// install it in place of the real client and read what the provider sent.
+// serve the provider with its clients through providerFactories and read what
+// the provider sent.
 type mksV2Fake struct {
 	server *httptest.Server
 
@@ -59,9 +61,11 @@ type mksV2Fake struct {
 	bodies map[string][]byte
 	calls  map[string]int
 
-	// clients records every mksV2ClientFn call, userAgents every request.
-	clients    []mksV2FakeClient
-	userAgents []string
+	// clients records every client built, userAgents every request, and
+	// configUserAgent is the User-Agent of the provider Config.
+	clients         []mksV2FakeClient
+	userAgents      []string
+	configUserAgent string
 }
 
 // mksV2FakeTask finishes on its first GET, unless stuck, and then applies
@@ -99,8 +103,13 @@ const (
 	mksV2RouteResizeNodegroup      = "POST /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}/resize"
 )
 
-// newMKSV2Fake starts the fake and makes mksV2ClientFn return clients of it
-// until the test ends. Tests using it must not call t.Parallel.
+// mksV2FakePollInterval shortens the waiter polls for every test: the fake
+// answers at once. It is set once and never restored, so parallel tests do
+// not race on it.
+var mksV2FakePollInterval sync.Once
+
+// newMKSV2Fake starts the fake. It touches no package state but the poll
+// interval, so tests using it may call t.Parallel.
 func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	t.Helper()
 
@@ -148,21 +157,48 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 
-	previousInterval := mksV2PollInterval
-	mksV2PollInterval = time.Millisecond
-	t.Cleanup(func() { mksV2PollInterval = previousInterval })
-
-	previous := mksV2ClientFn
-	mksV2ClientFn = func(_ context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error) {
-		f.mu.Lock()
-		f.clients = append(f.clients, mksV2FakeClient{projectID: projectID, pool: pool, userAgent: config.UserAgent})
-		f.mu.Unlock()
-
-		return newMKSV2ServiceClient("fake-token", f.server.URL, config.UserAgent)
-	}
-	t.Cleanup(func() { mksV2ClientFn = previous })
+	mksV2FakePollInterval.Do(func() { mksV2PollInterval = time.Millisecond })
 
 	return f
+}
+
+// providerFactories serve the provider like testAccProtoV6ProviderFactories,
+// with a Config of its own whose _v2 clients talk to the fake.
+func (f *mksV2Fake) providerFactories() map[string]func() (tfprotov6.ProviderServer, error) {
+	return map[string]func() (tfprotov6.ProviderServer, error){
+		"selectel": func() (tfprotov6.ProviderServer, error) {
+			sdk := Provider("test")
+			server, err := muxProviderServer(context.Background(), sdk, testFrameworkProvider{&frameworkProvider{
+				sdk: sdk, version: "test", configFn: f.config,
+			}})
+			if err != nil {
+				return nil, err
+			}
+
+			return server(), nil
+		},
+	}
+}
+
+// config builds the provider Config like newConfig, but for this test only.
+func (f *mksV2Fake) config(userAgent string, attr func(key string) string) *Config {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.configUserAgent = userAgent
+
+	return &Config{
+		ProjectID: attr("project_id"),
+		Region:    attr("region"),
+		UserAgent: userAgent,
+		mksV2Client: func(_ context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error) {
+			f.mu.Lock()
+			f.clients = append(f.clients, mksV2FakeClient{projectID: projectID, pool: pool, userAgent: config.UserAgent})
+			f.mu.Unlock()
+
+			return newMKSV2ServiceClient("fake-token", f.server.URL, config.UserAgent)
+		},
+	}
 }
 
 // handle registers a route that records the User-Agent and answers with a
@@ -693,13 +729,13 @@ func (f *mksV2Fake) checkClients(t *testing.T, projectID string) {
 		if c.projectID != projectID {
 			t.Errorf("client built for project %q, want %q", c.projectID, projectID)
 		}
-		if c.userAgent == "" || c.userAgent != cfgSingletone.UserAgent {
-			t.Errorf("client built with User-Agent %q, want the Config one %q", c.userAgent, cfgSingletone.UserAgent)
+		if c.userAgent == "" || c.userAgent != f.configUserAgent {
+			t.Errorf("client built with User-Agent %q, want the Config one %q", c.userAgent, f.configUserAgent)
 		}
 	}
 	for _, userAgent := range f.userAgents {
-		if userAgent != cfgSingletone.UserAgent {
-			t.Errorf("request sent with User-Agent %q, want %q", userAgent, cfgSingletone.UserAgent)
+		if userAgent != f.configUserAgent {
+			t.Errorf("request sent with User-Agent %q, want %q", userAgent, f.configUserAgent)
 		}
 	}
 }
@@ -745,22 +781,6 @@ func writeMKSV2Error(w http.ResponseWriter, status int, objectType, id string) {
 	var body mksclient.GenericError
 	body.Error.Message = fmt.Sprintf("fake error %d", status)
 	writeMKSV2JSON(w, status, body)
-}
-
-// useMKSV2TestConfig rebuilds the provider Config from the test configuration:
-// newConfig builds it once per process, so an earlier test would otherwise
-// decide its project_id. The next test gets a fresh one as well.
-func useMKSV2TestConfig(t *testing.T) {
-	t.Helper()
-
-	setTestProviderEnv(t)
-	t.Setenv("INFRA_PROJECT_ID", "")
-	once = sync.Once{}
-	cfgSingletone = nil
-	t.Cleanup(func() {
-		once = sync.Once{}
-		cfgSingletone = nil
-	})
 }
 
 // listNodegroups lists the nodegroups of the cluster.

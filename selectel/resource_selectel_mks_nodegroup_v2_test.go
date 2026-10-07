@@ -18,8 +18,7 @@ const (
 )
 
 func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
-	useMKSV2TestConfig(t)
-	t.Setenv("INFRA_REGION", "")
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 	// The new nodegroup is found by the list difference, and its operations
@@ -52,7 +51,7 @@ func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
   }
 `)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy: func(_ *terraform.State) error {
 			if fake.hasNodegroup("ng-1") || !fake.hasNodegroup("ng-existing") {
 				return fmt.Errorf("destroy must remove ng-1 and keep ng-existing")
@@ -116,14 +115,14 @@ func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceCreateTaskError(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 	fake.failTasks("CLUSTER_RESIZE", true)
 
 	config := testMKSNodegroupV2Config(testMKSNodegroupV2Flavor)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-2"),
 		Steps: []resource.TestStep{
 			{
@@ -151,6 +150,8 @@ func TestMKSNodegroupV2ResourceCreateTaskError(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceCreateTimeout(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		// readFails makes the read after the wait fail too.
@@ -163,7 +164,7 @@ func TestMKSNodegroupV2ResourceCreateTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 			fake.stickTasks("CLUSTER_RESIZE", true)
@@ -178,7 +179,7 @@ func TestMKSNodegroupV2ResourceCreateTimeout(t *testing.T) {
   }
 `)
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-2"),
 				Steps: []resource.TestStep{
 					{
@@ -216,6 +217,8 @@ func TestMKSNodegroupV2ResourceCreateTimeout(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceConfigValidation(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		attributes string
@@ -305,7 +308,7 @@ func TestMKSNodegroupV2ResourceConfigValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -318,7 +321,7 @@ func TestMKSNodegroupV2ResourceConfigValidation(t *testing.T) {
 				step.ExpectError = testMKSClusterV2Error(tt.wantError)
 			}
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps:                    []resource.TestStep{step},
 			})
 		})
@@ -329,12 +332,12 @@ func TestMKSNodegroupV2ResourceDedicatedCluster(t *testing.T) {
 	const wantError = `cluster ` + testMKSV2ClusterID + ` has workers_type = DEDICATED and accepts only dedicated node groups`
 
 	t.Run("existing cluster fails at plan", func(t *testing.T) {
-		useMKSV2TestConfig(t)
+		t.Parallel()
 		fake := newMKSV2Fake(t)
 		testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeL3VPN)
 
 		resource.UnitTest(t, resource.TestCase{
-			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			ProtoV6ProviderFactories: fake.providerFactories(),
 			Steps: []resource.TestStep{
 				{
 					Config:      testMKSNodegroupV2Config(testMKSNodegroupV2Flavor),
@@ -347,7 +350,7 @@ func TestMKSNodegroupV2ResourceDedicatedCluster(t *testing.T) {
 	})
 
 	t.Run("cluster in the same apply fails before any create", func(t *testing.T) {
-		useMKSV2TestConfig(t)
+		t.Parallel()
 		fake := newMKSV2Fake(t)
 
 		config := testMKSClusterV2Config(testMKSClusterV2ProviderConfig("provider-project", ""), `
@@ -361,7 +364,7 @@ resource "selectel_mks_nodegroup_v2" "nodegroup_tf_test_1" {
 }
 `
 		resource.UnitTest(t, resource.TestCase{
-			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			ProtoV6ProviderFactories: fake.providerFactories(),
 			CheckDestroy:             testMKSClusterV2Destroyed(fake),
 			Steps: []resource.TestStep{
 				{
@@ -375,7 +378,7 @@ resource "selectel_mks_nodegroup_v2" "nodegroup_tf_test_1" {
 }
 
 func TestMKSNodegroupV2ResourceInPlaceUpdate(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -396,7 +399,7 @@ func TestMKSNodegroupV2ResourceInPlaceUpdate(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -455,7 +458,7 @@ func TestMKSNodegroupV2ResourceInPlaceUpdate(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceResize(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -469,7 +472,7 @@ func TestMKSNodegroupV2ResourceResize(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -511,7 +514,7 @@ func TestMKSNodegroupV2ResourceResize(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceAutoscaleIgnoresCount(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -528,7 +531,7 @@ func TestMKSNodegroupV2ResourceAutoscaleIgnoresCount(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -565,7 +568,7 @@ func TestMKSNodegroupV2ResourceAutoscaleIgnoresCount(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceStatusFromAPI(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -580,7 +583,7 @@ func TestMKSNodegroupV2ResourceStatusFromAPI(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -594,8 +597,7 @@ func TestMKSNodegroupV2ResourceStatusFromAPI(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceImport(t *testing.T) {
-	useMKSV2TestConfig(t)
-	t.Setenv("INFRA_REGION", "")
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -610,7 +612,7 @@ func TestMKSNodegroupV2ResourceImport(t *testing.T) {
   }
 `)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -630,7 +632,7 @@ func TestMKSNodegroupV2ResourceImport(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 	fake.seedNodegroup(mksclient.NodegroupDetailed{
@@ -663,7 +665,7 @@ func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -695,7 +697,7 @@ func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceAddedAffinityPolicyRecreates(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -709,7 +711,7 @@ func TestMKSNodegroupV2ResourceAddedAffinityPolicyRecreates(t *testing.T) {
 `)
 	}
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-2"),
 		Steps: []resource.TestStep{
 			{
@@ -730,6 +732,8 @@ func TestMKSNodegroupV2ResourceAddedAffinityPolicyRecreates(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceNeedsProviderConfig(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		providerConfig string
@@ -757,8 +761,7 @@ func TestMKSNodegroupV2ResourceNeedsProviderConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
-			t.Setenv("INFRA_REGION", "")
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -772,7 +775,7 @@ func TestMKSNodegroupV2ResourceNeedsProviderConfig(t *testing.T) {
 				step.ImportStateId = testMKSNodegroupV2ID
 			}
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps:                    []resource.TestStep{step},
 			})
 			testMKSNodegroupV2NoCreate(t, fake)
@@ -781,13 +784,13 @@ func TestMKSNodegroupV2ResourceNeedsProviderConfig(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceRemovedOutside(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
 	config := testMKSNodegroupV2Config(testMKSNodegroupV2Flavor)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -804,13 +807,13 @@ func TestMKSNodegroupV2ResourceRemovedOutside(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceDeleteTaskError(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
 	config := testMKSNodegroupV2Config(testMKSNodegroupV2Flavor)
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -909,6 +912,8 @@ func testMKSNodegroupV2NoCreate(t *testing.T, fake *mksV2Fake) {
 }
 
 func TestMKSNodegroupV2ResourceListAfterCreateFails(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		// failures is the number of failed lists after the create request.
@@ -926,7 +931,7 @@ func TestMKSNodegroupV2ResourceListAfterCreateFails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 			fake.seedNodegroup(mksclient.NodegroupDetailed{Id: "ng-existing", ClusterId: testMKSV2ClusterID, Segment: "ru-7b"})
@@ -957,7 +962,7 @@ func TestMKSNodegroupV2ResourceListAfterCreateFails(t *testing.T) {
 				checkDestroy = nil
 			}
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				CheckDestroy:             checkDestroy,
 				Steps:                    []resource.TestStep{step},
 			})
@@ -971,6 +976,8 @@ func TestMKSNodegroupV2ResourceListAfterCreateFails(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceCreatedElsewhere(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		other mksclient.NodegroupDetailed
@@ -1009,7 +1016,7 @@ func TestMKSNodegroupV2ResourceCreatedElsewhere(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 			fake.createConcurrently(tt.other)
@@ -1025,7 +1032,7 @@ func TestMKSNodegroupV2ResourceCreatedElsewhere(t *testing.T) {
 				checkDestroy = nil
 			}
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				CheckDestroy:             checkDestroy,
 				Steps:                    []resource.TestStep{step},
 			})
@@ -1038,14 +1045,14 @@ func TestMKSNodegroupV2ResourceCreatedElsewhere(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceCreateErrorAfterStore(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 	// Like mk-api-v2 when the task publish fails after the commit.
 	fake.failCreateNodegroupsAfterStore(http.StatusInternalServerError)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		Steps: []resource.TestStep{
 			{
 				Config: testMKSNodegroupV2Config(testMKSNodegroupV2Flavor),
@@ -1057,6 +1064,8 @@ func TestMKSNodegroupV2ResourceCreateErrorAfterStore(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceFlavorReplacesVolume(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		cloud     string
@@ -1083,7 +1092,7 @@ func TestMKSNodegroupV2ResourceFlavorReplacesVolume(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -1097,7 +1106,7 @@ func TestMKSNodegroupV2ResourceFlavorReplacesVolume(t *testing.T) {
 				step.ExpectError = testMKSClusterV2Error(tt.wantError)
 			}
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				// The failed node group is saved tainted and destroyed.
 				CheckDestroy: testMKSNodegroupV2Destroyed(fake, "ng-1"),
 				Steps:        []resource.TestStep{step},
@@ -1107,7 +1116,7 @@ func TestMKSNodegroupV2ResourceFlavorReplacesVolume(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceImportDedicated(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeL3VPN)
 	fake.seedNodegroup(mksclient.NodegroupDetailed{
@@ -1117,7 +1126,7 @@ func TestMKSNodegroupV2ResourceImportDedicated(t *testing.T) {
 	})
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		Steps: []resource.TestStep{
 			{
 				Config:        testMKSClusterV2ProviderConfig("provider-project", testMKSV2Pool) + testMKSNodegroupV2Resource(testMKSNodegroupV2Flavor),
@@ -1136,7 +1145,7 @@ func TestMKSNodegroupV2ResourceImportDedicated(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceImportMarkExpires(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 	fake.seedNodegroup(mksclient.NodegroupDetailed{
@@ -1161,7 +1170,7 @@ func TestMKSNodegroupV2ResourceImportMarkExpires(t *testing.T) {
 	}
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 		Steps: []resource.TestStep{
 			{
@@ -1192,6 +1201,8 @@ func TestMKSNodegroupV2ResourceImportMarkExpires(t *testing.T) {
 }
 
 func TestMKSNodegroupV2ResourceUpdateTaskError(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		taskType string
@@ -1224,7 +1235,7 @@ func TestMKSNodegroupV2ResourceUpdateTaskError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
@@ -1237,7 +1248,7 @@ func TestMKSNodegroupV2ResourceUpdateTaskError(t *testing.T) {
 				return testMKSNodegroupV2Config(count + "  cloud_nodegroup_config = {\n    flavor_id = \"1013\"\n  }\n  " + attributes + "\n")
 			}
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
 				Steps: []resource.TestStep{
 					{

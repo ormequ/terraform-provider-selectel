@@ -17,6 +17,8 @@ const (
 )
 
 func TestMKSFeatureGatesV2DataSource(t *testing.T) {
+	t.Parallel()
+
 	featureGates := []mksclient.AvailableFeatureGates{
 		{KubeVersionMinor: new("1.30"), Names: &[]string{"GracefulNodeShutdown", "TopologyManager"}},
 		{KubeVersionMinor: new("1.31"), Names: &[]string{"TopologyManager", "SidecarContainers", "TopologyManager"}},
@@ -95,7 +97,7 @@ func TestMKSFeatureGatesV2DataSource(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			fake.seedFeatureGates(featureGates...)
 			if tt.failStatus != 0 {
@@ -103,7 +105,7 @@ func TestMKSFeatureGatesV2DataSource(t *testing.T) {
 			}
 
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps: []resource.TestStep{
 					{
 						Config:      testKubeOptionsV2Config(dataSourceFeatureGatesV2, tt.providerProjectID, tt.projectID, tt.filter),

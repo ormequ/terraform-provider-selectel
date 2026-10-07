@@ -11,7 +11,7 @@ import (
 )
 
 func TestMKSKubeVersionsV2DataSourceBasic(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.seedKubeVersions(
 		mksclient.KubeVersionInfo{Version: new("1.29.5"), IsDefault: new(true)},
@@ -25,7 +25,7 @@ func TestMKSKubeVersionsV2DataSourceBasic(t *testing.T) {
 
 	dataSourceName := "data.selectel_mks_kube_versions_v2.kube_versions_tf_test_1"
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		Steps: []resource.TestStep{
 			{
 				Config: testMKSKubeVersionsV2Basic("", "attribute-project"),
@@ -48,6 +48,8 @@ func TestMKSKubeVersionsV2DataSourceBasic(t *testing.T) {
 }
 
 func TestMKSKubeVersionsV2DataSourceProjectID(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name              string
 		providerProjectID string
@@ -74,7 +76,7 @@ func TestMKSKubeVersionsV2DataSourceProjectID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			useMKSV2TestConfig(t)
+			t.Parallel()
 			fake := newMKSV2Fake(t)
 			fake.seedKubeVersions(mksclient.KubeVersionInfo{Version: new("1.31.2"), IsDefault: new(true)})
 
@@ -87,7 +89,7 @@ func TestMKSKubeVersionsV2DataSourceProjectID(t *testing.T) {
 					"data.selectel_mks_kube_versions_v2.kube_versions_tf_test_1", "project_id", tt.wantProjectID)
 			}
 			resource.UnitTest(t, resource.TestCase{
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				ProtoV6ProviderFactories: fake.providerFactories(),
 				Steps:                    []resource.TestStep{step},
 			})
 
@@ -99,12 +101,12 @@ func TestMKSKubeVersionsV2DataSourceProjectID(t *testing.T) {
 }
 
 func TestMKSKubeVersionsV2DataSourceAPIError(t *testing.T) {
-	useMKSV2TestConfig(t)
+	t.Parallel()
 	fake := newMKSV2Fake(t)
 	fake.fail(mksV2RouteKubeVersions, http.StatusInternalServerError)
 
 	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: fake.providerFactories(),
 		Steps: []resource.TestStep{
 			{
 				Config:      testMKSKubeVersionsV2Basic("", "attribute-project"),

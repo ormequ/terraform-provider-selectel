@@ -1,15 +1,21 @@
 package selectel
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	dedicated "github.com/selectel/dedicated-go/v2/pkg/v2"
+	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
 )
 
@@ -847,6 +853,145 @@ func TestMKSNodegroupV2Pool(t *testing.T) {
 	}
 }
 
+func TestMKSNodegroupV2DefaultTimeout(t *testing.T) {
+	tests := []struct {
+		name   string
+		config types.Object
+		want   time.Duration
+	}{
+		{name: "cloud", config: types.ObjectNull(mksNodegroupV2DedicatedConfigAttrTypes), want: mksClusterV2DefaultTimeout},
+		{
+			name:   "dedicated",
+			config: types.ObjectValueMust(mksNodegroupV2DedicatedConfigAttrTypes, testMKSNodegroupV2DedicatedAttrs()),
+			want:   mksNodegroupV2DedicatedCreateTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := mksNodegroupV2Model{DedicatedNodegroupConfig: tt.config}
+			got := m.defaultTimeout()
+			if got != tt.want {
+				t.Errorf("defaultTimeout() = %s, want %s for create, update and delete", got, tt.want)
+			}
+		})
+	}
+}
+
+func testMKSNodegroupV2DedicatedAttrs() map[string]attr.Value {
+	return map[string]attr.Value{
+		"service_uuid":             types.StringValue(testMKSNodegroupV2ServiceUUID),
+		"price_plan_name":          types.StringValue("1 day"),
+		"price_plan_uuid":          types.StringValue(testMKSNodegroupV2PricePlanDay),
+		"root_size_gb":             types.Int64Value(100),
+		"create_storage_partition": types.BoolValue(true),
+		"currency":                 types.StringValue("main"),
+	}
+}
+
+// testMKSNodegroupV2Private is a private state of plain keys.
+type testMKSNodegroupV2Private map[string][]byte
+
+func (p testMKSNodegroupV2Private) GetKey(_ context.Context, key string) ([]byte, diag.Diagnostics) {
+	return p[key], nil
+}
+
+func (p testMKSNodegroupV2Private) SetKey(_ context.Context, key string, value []byte) diag.Diagnostics {
+	p[key] = value
+
+	return nil
+}
+
+func TestMKSNodegroupV2NodegroupClientPool(t *testing.T) {
+	var built []string
+	r := &mksNodegroupV2Resource{mksV2Provided{config: &Config{
+		ProjectID: "provider-project",
+		Region:    "ru-3",
+		mksV2Client: func(_ context.Context, config *Config, _, pool string) (*mksv2.ServiceClient, error) {
+			built = append(built, pool)
+
+			return newMKSV2ServiceClient("fake-token", "http://127.0.0.1", config.UserAgent)
+		},
+	}}}
+
+	tests := []struct {
+		name    string
+		segment string
+		private testMKSNodegroupV2Private
+		want    string
+	}{
+		{name: "pool segment", segment: "ru-7a", private: testMKSNodegroupV2Private{mksNodegroupV2PoolKey: []byte(`"ru-9"`)}, want: "ru-7"},
+		// Terraform before 1.12 sends no identity, so the saved pool alone
+		// keeps a dedicated node group where it was created.
+		{name: "saved pool over the provider", segment: "SPB-5", private: testMKSNodegroupV2Private{mksNodegroupV2PoolKey: []byte(`"ru-7"`)}, want: "ru-7"},
+		{name: "nothing saved", segment: "SPB-5", private: testMKSNodegroupV2Private{}, want: "ru-3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			built = nil
+			_, pool, diags := r.nodegroupClient(t.Context(), types.StringValue(tt.segment), nil, tt.private)
+			if diags.HasError() {
+				t.Fatalf("nodegroupClient: %v", diags)
+			}
+			if pool != tt.want || !slices.Equal(built, []string{tt.want}) {
+				t.Errorf("nodegroupClient returned pool %q and built clients for %v, want %q", pool, built, tt.want)
+			}
+		})
+	}
+}
+
+func TestMKSNodegroupV2SavePool(t *testing.T) {
+	tests := []struct {
+		name      string
+		dedicated bool
+		prior     testMKSNodegroupV2Private
+		want      string
+	}{
+		{name: "dedicated create", dedicated: true, want: `"ru-7"`},
+		{name: "dedicated read without a saved pool", dedicated: true, prior: testMKSNodegroupV2Private{}, want: `"ru-7"`},
+		{name: "dedicated read keeps the saved pool", dedicated: true, prior: testMKSNodegroupV2Private{mksNodegroupV2PoolKey: []byte(`"ru-9"`)}},
+		{name: "cloud", dedicated: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next := testMKSNodegroupV2Private{}
+			var prior mksNodegroupV2PrivateState
+			if tt.prior != nil {
+				prior = tt.prior
+			}
+			diags := mksNodegroupV2SavePool(t.Context(), tt.dedicated, "ru-7", prior, next)
+			if diags.HasError() {
+				t.Fatalf("mksNodegroupV2SavePool: %v", diags)
+			}
+			got := string(next[mksNodegroupV2PoolKey])
+			if got != tt.want {
+				t.Errorf("saved pool %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMKSNodegroupV2ResourceDedicatedClusterNotFound(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	// The cluster is in another pool than the provider one, so mk-api-v2
+	// answers 404, as the fake does for a cluster it lacks.
+	fake.seedPricePlans(&dedicated.PricePlan{UUID: testMKSNodegroupV2PricePlanDay, Name: "1 day"})
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config:      testMKSNodegroupV2DedicatedConfig("  nodes_count = 1\n", ""),
+				ExpectError: testMKSClusterV2Error(`looked up in pool ` + testMKSV2Pool + `: a dedicated node group takes the pool from the provider region`),
+			},
+		},
+	})
+	testMKSNodegroupV2NoCreate(t, fake)
+}
+
 const testMKSNodegroupV2Flavor = `
   nodes_count = 1
   cloud_nodegroup_config = {
@@ -1116,10 +1261,9 @@ func TestMKSNodegroupV2ResourceFlavorReplacesVolume(t *testing.T) {
 	}
 }
 
-func TestMKSNodegroupV2ResourceDedicatedImport(t *testing.T) {
-	t.Parallel()
-	fake := newMKSV2Fake(t)
-	testMKSNodegroupV2SeedDedicated(fake)
+// testMKSNodegroupV2SeedDedicatedNodegroup seeds dedicated node group ng-1
+// with the price plan pricePlanUUID, as created outside Terraform.
+func testMKSNodegroupV2SeedDedicatedNodegroup(fake *mksV2Fake, pricePlanUUID string) {
 	fake.seedNodegroup(mksclient.NodegroupDetailed{
 		Id: "ng-1", ClusterId: testMKSV2ClusterID, Segment: "SPB-5", Status: "ACTIVE",
 		NodegroupType:     mksclient.NodegroupDetailedNodegroupTypeDEDICATED,
@@ -1127,10 +1271,17 @@ func TestMKSNodegroupV2ResourceDedicatedImport(t *testing.T) {
 		Nodes: mksV2FakeNodes("ng-1", 2),
 		Cidr:  new("10.20.30.0/24"),
 		DedicatedNodegroupConfig: &mksclient.DedicatedNodegroupConfig{
-			ServiceUuid: testMKSNodegroupV2ServiceUUID, PricePlanUuid: testMKSNodegroupV2PricePlanDay,
+			ServiceUuid: testMKSNodegroupV2ServiceUUID, PricePlanUuid: pricePlanUUID,
 			RootSizeGb: new(int64(100)), CreateStoragePartition: new(true),
 		},
 	})
+}
+
+func TestMKSNodegroupV2ResourceDedicatedImport(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedDedicated(fake)
+	testMKSNodegroupV2SeedDedicatedNodegroup(fake, testMKSNodegroupV2PricePlanDay)
 
 	config := testMKSNodegroupV2DedicatedConfig(`
   nodes_count = 2
@@ -1172,6 +1323,36 @@ func TestMKSNodegroupV2ResourceDedicatedImport(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestMKSNodegroupV2ResourceDedicatedImportUnknownPricePlan(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedDedicated(fake)
+	// A retired plan, or one outside the public list.
+	const retired = "5f4e3d2c-1b0a-4f9e-8d7c-6b5a4f3e2d1c"
+	testMKSNodegroupV2SeedDedicatedNodegroup(fake, retired)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		Steps: []resource.TestStep{
+			{
+				// A null price_plan_name would make the configured one
+				// replace the node group, so the import fails instead.
+				Config: testMKSNodegroupV2DedicatedConfig(`
+  nodes_count = 2
+  cidr        = "10.20.30.0/24"
+`, ""),
+				ResourceName:  testMKSNodegroupV2Name,
+				ImportState:   true,
+				ImportStateId: testMKSNodegroupV2ID,
+				ExpectError:   testMKSClusterV2Error(`price plan ` + retired + ` of the node group is not among the price plans`),
+			},
+		},
+	})
+	if !fake.hasNodegroup("ng-1") {
+		t.Error("the failed import deleted the node group")
+	}
 }
 
 func TestMKSNodegroupV2ResourceImportMarkExpires(t *testing.T) {
@@ -1341,7 +1522,7 @@ func testMKSNodegroupV2SeedDedicated(fake *mksV2Fake) {
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeL3VPN)
 	fake.seedPricePlans(
 		&dedicated.PricePlan{UUID: testMKSNodegroupV2PricePlanDay, Name: "1 day"},
-		&dedicated.PricePlan{UUID: testMKSNodegroupV2PricePlanYear, Name: "12 months"},
+		&dedicated.PricePlan{UUID: testMKSNodegroupV2PricePlanYear, Name: "12 month"},
 	)
 }
 
@@ -1381,6 +1562,10 @@ func TestMKSNodegroupV2ResourceDedicatedBasic(t *testing.T) {
   cidr        = "10.20.30.0/24"
 `+attributes, "")
 	}
+	const resized = `
+  labels = { a = "1", b = "2" }
+  taints = [{ key = "k1", value = "v1", effect = "NoSchedule" }]
+`
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: fake.providerFactories(),
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
@@ -1427,10 +1612,7 @@ func TestMKSNodegroupV2ResourceDedicatedBasic(t *testing.T) {
 			{
 				// Labels and taints change in place, with no autoscale field:
 				// the API rejects any of them for a dedicated node group.
-				Config: config(`
-  labels = { a = "1", b = "2" }
-  taints = [{ key = "k1", value = "v1", effect = "NoSchedule" }]
-`),
+				Config: config(resized),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "labels.b", "2"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "taints.0.key", "k1"),
@@ -1444,13 +1626,39 @@ func TestMKSNodegroupV2ResourceDedicatedBasic(t *testing.T) {
 					},
 				),
 			},
+			{
+				// A resize is the other in-place change of a dedicated node
+				// group: one resize call, no new PATCH, no replacement.
+				Config: strings.Replace(config(resized), "nodes_count = 2", "nodes_count = 3", 1),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "nodes_count", "3"),
+					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "nodes.#", "3"),
+					testMKSClusterV2Calls(fake, map[string]int{
+						mksV2RouteCreateNodegroups: 1, mksV2RoutePatchNodegroup: 1, mksV2RouteResizeNodegroup: 1,
+						mksV2RouteDeleteNodegroup: 0,
+					}),
+					func(_ *terraform.State) error {
+						body, _ := fake.lastBody(t, mksV2RouteResizeNodegroup)["nodegroup"].(map[string]any)
+
+						return testMKSClusterV2BodyFields(body, map[string]any{"desired": float64(3)})
+					},
+				),
+			},
+			{
+				// The provider moves to another pool: the node group keeps the
+				// pool it was created in, and destroy runs with this
+				// configuration too.
+				Config: strings.Replace(strings.Replace(config(resized), "nodes_count = 2", "nodes_count = 3", 1),
+					fmt.Sprintf("region      = %q", testMKSV2Pool), `region      = "ru-3"`, 1),
+				PlanOnly: true,
+			},
 		},
 	})
 
 	fake.checkClients(t, "provider-project")
 	for _, pool := range fake.clientPools() {
 		if pool != testMKSV2Pool {
-			t.Errorf("client built for pool %q, want %q from the provider", pool, testMKSV2Pool)
+			t.Errorf("client built for pool %q, want %q where the node group was created", pool, testMKSV2Pool)
 		}
 	}
 }
@@ -1484,7 +1692,7 @@ func TestMKSNodegroupV2ResourceDedicatedPricePlan(t *testing.T) {
 			plan      string
 			wantError string
 		}{
-			{name: "resolved before the create", plan: "12 months"},
+			{name: "resolved before the create", plan: "12 month"},
 			{name: "unknown fails before the create", plan: "1 week", wantError: `price plan 1 week not found`},
 		}
 		for _, tt := range tests {
@@ -1502,9 +1710,11 @@ resource "terraform_data" "price_plan" {
 				step := resource.TestStep{
 					Config: config,
 					Check: resource.ComposeTestCheckFunc(
-						resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "dedicated_nodegroup_config.price_plan_name", "12 months"),
+						resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "dedicated_nodegroup_config.price_plan_name", "12 month"),
 						resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "dedicated_nodegroup_config.price_plan_uuid",
 							testMKSNodegroupV2PricePlanYear),
+						// No cidr was configured, so the state takes the allocated one.
+						resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cidr", mksV2FakeAllocatedCIDR),
 					),
 				}
 				checkDestroy := testMKSNodegroupV2Destroyed(fake, "ng-1")
@@ -1566,6 +1776,10 @@ func TestMKSNodegroupV2ResourceDedicatedConfigValidation(t *testing.T) {
 		{name: "cidr of another size", attributes: "nodes_count = 1\ncidr = \"10.20.0.0/16\"", wantError: `must be a /24 network`},
 		{name: "public cidr", attributes: "nodes_count = 1\ncidr = \"203.0.113.0/24\"", wantError: `must be a private network`},
 		{name: "not a cidr", attributes: "nodes_count = 1\ncidr = \"10.20.30.0\"", wantError: `is not a CIDR`},
+		{
+			name: "cidr with host bits", attributes: "nodes_count = 1\ncidr = \"10.20.30.5/24\"",
+			wantError: `has host bits set: use the network address 10.20.30.0/24`,
+		},
 		{name: "service_uuid not a UUID", attributes: "nodes_count = 1", wantError: `must be a UUID`},
 		{name: "small root", attributes: "nodes_count = 1", dedicated: "root_size_gb = 20", wantError: `must be at least 30`},
 		{name: "currency", attributes: "nodes_count = 1", dedicated: `currency = "RUB"`, wantError: `value must be one of`},

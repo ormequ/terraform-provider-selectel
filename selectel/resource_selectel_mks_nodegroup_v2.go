@@ -399,7 +399,7 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 					"currency": schema.StringAttribute{
 						Optional:      true,
 						Computed:      true,
-						Description:   "Balance that pays for the servers: `main` or `bonus`. If omitted, the API uses `main`.",
+						Description:   "Balance that pays for the servers ordered at create: `main` or `bonus`. If omitted, the API uses `main`. A resize always pays from `main`.",
 						PlanModifiers: replaceStringUnlessImported,
 						Validators: []validator.String{stringvalidator.OneOf(
 							string(mksclient.Main), string(mksclient.Bonus),
@@ -588,7 +588,7 @@ func validateMKSNodegroupV2Dedicated(config mksNodegroupV2Model, diags *diag.Dia
 
 // validateMKSNodegroupV2DedicatedCIDR mirrors the checks of mk-api-v2
 // validate/network.go:11-34 that need no API configuration: a private, not
-// loopback /24.
+// loopback /24, and also that it is the network address.
 func validateMKSNodegroupV2DedicatedCIDR(cidr string) error {
 	ip, network, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -600,6 +600,12 @@ func validateMKSNodegroupV2DedicatedCIDR(cidr string) error {
 	size, _ := network.Mask.Size()
 	if size != mksNodegroupV2DedicatedCIDRSize {
 		return fmt.Errorf("%q must be a /%d network", cidr, mksNodegroupV2DedicatedCIDRSize)
+	}
+	// The API stores the cidr in a PostgreSQL cidr column, which rejects host
+	// bits with a 500 that does not name the cidr (mk-dal migration
+	// 20240709164711-dedicated-nodegroup-network.sql:11).
+	if !ip.Equal(network.IP) {
+		return fmt.Errorf("%q has host bits set: use the network address %s", cidr, network)
 	}
 
 	return nil
@@ -692,7 +698,7 @@ func (r *mksNodegroupV2Resource) checkClusterWorkers(ctx context.Context, plan m
 		return
 	}
 
-	client, _, d := r.nodegroupClient(ctx, plan.Segment, nil)
+	client, _, d := r.nodegroupClient(ctx, plan.Segment, nil, nil)
 	diags.Append(d...)
 	if diags.HasError() {
 		return
@@ -715,13 +721,9 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	defaultTimeout := mksClusterV2DefaultTimeout
-	if plan.isDedicated() {
-		defaultTimeout = mksNodegroupV2DedicatedCreateTimeout
-	}
-	timeout, diags := plan.Timeouts.Create(ctx, defaultTimeout)
+	timeout, diags := plan.Timeouts.Create(ctx, plan.defaultTimeout())
 	resp.Diagnostics.Append(diags...)
-	client, pool, diags := r.nodegroupClient(ctx, plan.Segment, nil)
+	client, pool, diags := r.nodegroupClient(ctx, plan.Segment, nil, nil)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -741,6 +743,7 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 	clusterID := plan.ClusterID.ValueString()
 	err := mksNodegroupV2CheckCluster(ctx, client, clusterID, plan.isDedicated())
 	if err != nil {
+		err = mksNodegroupV2PoolNotFound(err, plan.isDedicated(), pool)
 		resp.Diagnostics.AddAttributeError(path.Root("cluster_id"), "Error creating node group", errCreatingObject(objectNodegroup, err).Error())
 
 		return
@@ -748,10 +751,12 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 
 	nodegroupID, err := createMKSNodegroupV2(ctx, client, clusterID, opts)
 	if err != nil {
+		err = mksNodegroupV2PoolNotFound(err, plan.isDedicated(), pool)
 		resp.Diagnostics.AddError("Error creating node group", errCreatingObject(objectNodegroup, err).Error())
 
 		return
 	}
+	resp.Diagnostics.Append(mksNodegroupV2SavePool(ctx, plan.isDedicated(), pool, nil, resp.Private)...)
 
 	waitErr := newMKSV2CreatedTaskWaiter(client, clusterID, nodegroupID).Wait(ctx)
 
@@ -791,7 +796,7 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 
 		return
 	}
-	client, pool, diags := r.nodegroupClient(ctx, state.Segment, req.Identity)
+	client, pool, diags := r.nodegroupClient(ctx, state.Segment, req.Identity, req.Private)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -822,6 +827,9 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 	resp.Diagnostics.Append(r.readPricePlanName(ctx, &state)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity, pool)...)
+	// The read of an import, or of a node group created before the pool was
+	// saved.
+	resp.Diagnostics.Append(mksNodegroupV2SavePool(ctx, state.isDedicated(), pool, req.Private, resp.Private)...)
 }
 
 // checkMovedProject fails a Read that got 404 for a node group moved from
@@ -860,9 +868,9 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 		return
 	}
 
-	timeout, diags := plan.Timeouts.Update(ctx, mksClusterV2DefaultTimeout)
+	timeout, diags := plan.Timeouts.Update(ctx, plan.defaultTimeout())
 	resp.Diagnostics.Append(diags...)
-	client, pool, diags := r.nodegroupClient(ctx, state.Segment, req.Identity)
+	client, pool, diags := r.nodegroupClient(ctx, state.Segment, req.Identity, req.Private)
 	resp.Diagnostics.Append(diags...)
 	patch, changed, diags := expandMKSNodegroupV2Patch(ctx, plan, state)
 	resp.Diagnostics.Append(diags...)
@@ -879,6 +887,7 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 			return nodegroup.Patch(ctx, client, clusterID, nodegroupID, patch)
 		})
 		if err != nil {
+			err = mksNodegroupV2PoolNotFound(err, state.isDedicated(), pool)
 			resp.Diagnostics.AddError("Error updating node group", errUpdatingObject(objectNodegroup, state.ID.ValueString(), err).Error())
 
 			return
@@ -890,6 +899,7 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 			return nodegroup.Resize(ctx, client, clusterID, nodegroupID, plan.Count.ValueInt64())
 		})
 		if err != nil {
+			err = mksNodegroupV2PoolNotFound(err, state.isDedicated(), pool)
 			resp.Diagnostics.AddError("Error resizing node group", errUpdatingObject(objectNodegroup, state.ID.ValueString(), err).Error())
 
 			return
@@ -917,9 +927,9 @@ func (r *mksNodegroupV2Resource) Delete(ctx context.Context, req resource.Delete
 		return
 	}
 
-	timeout, diags := state.Timeouts.Delete(ctx, mksClusterV2DefaultTimeout)
+	timeout, diags := state.Timeouts.Delete(ctx, state.defaultTimeout())
 	resp.Diagnostics.Append(diags...)
-	client, _, diags := r.nodegroupClient(ctx, state.Segment, req.Identity)
+	client, _, diags := r.nodegroupClient(ctx, state.Segment, req.Identity, req.Private)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1043,14 +1053,21 @@ func mksNodegroupV2ReplaceUnlessImported(ctx context.Context, stateNull bool, ge
 // nodegroupClient builds the client for the provider project and returns it
 // with its pool: the pool of a pool segment; otherwise, for a dedicated
 // location such as SPB-3 or before an import has read the segment, the pool
-// of the identity, which keeps the one used before, or of the provider.
-func (r *mksNodegroupV2Resource) nodegroupClient(ctx context.Context, segment types.String, identity *tfsdk.ResourceIdentity) (*mksv2.ServiceClient, string, diag.Diagnostics) {
+// saved in the private state or the identity, which keep the one used before,
+// or else the pool of the provider. private is nil before the node group
+// exists.
+func (r *mksNodegroupV2Resource) nodegroupClient(ctx context.Context, segment types.String, identity *tfsdk.ResourceIdentity,
+	private mksNodegroupV2PrivateState,
+) (*mksv2.ServiceClient, string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	knownSegment := !segment.IsNull() && !segment.IsUnknown()
 
 	pool := ""
 	if knownSegment && mksNodegroupV2SegmentRegexp.MatchString(segment.ValueString()) {
 		pool = mksNodegroupV2Pool(segment.ValueString())
+	}
+	if pool == "" && private != nil {
+		pool, diags = mksNodegroupV2SavedPool(ctx, private)
 	}
 	if pool == "" && identity != nil && !identity.Raw.IsNull() {
 		var id mksNodegroupV2IdentityModel
@@ -1075,6 +1092,61 @@ func (r *mksNodegroupV2Resource) nodegroupClient(ctx context.Context, segment ty
 	diags.Append(d...)
 
 	return client, pool, diags
+}
+
+// mksNodegroupV2PoolKey holds the pool of a dedicated node group: its
+// location tells none, and without it a later change of the provider region
+// would make Read look in another pool, get 404 and drop the node group from
+// the state on Terraform before 1.12, which sends no identity.
+const mksNodegroupV2PoolKey = "pool"
+
+// mksNodegroupV2SavedPool returns the pool saved in the private state, or "".
+func mksNodegroupV2SavedPool(ctx context.Context, private mksNodegroupV2PrivateState) (string, diag.Diagnostics) {
+	raw, diags := private.GetKey(ctx, mksNodegroupV2PoolKey)
+	if len(raw) == 0 || diags.HasError() {
+		return "", diags
+	}
+	var pool string
+	err := json.Unmarshal(raw, &pool)
+	if err != nil {
+		diags.AddError("Error reading the pool of the node group", err.Error())
+	}
+
+	return pool, diags
+}
+
+// mksNodegroupV2SavePool saves the pool of a dedicated node group in next
+// unless prior has one already; prior is nil in Create.
+func mksNodegroupV2SavePool(ctx context.Context, dedicated bool, pool string, prior, next mksNodegroupV2PrivateState) diag.Diagnostics {
+	if !dedicated || pool == "" || next == nil {
+		return nil
+	}
+	if prior != nil {
+		saved, diags := mksNodegroupV2SavedPool(ctx, prior)
+		if saved != "" || diags.HasError() {
+			return diags
+		}
+	}
+	raw, err := json.Marshal(pool)
+	if err != nil {
+		var diags diag.Diagnostics
+		diags.AddError("Error saving the pool of the node group", err.Error())
+
+		return diags
+	}
+
+	return next.SetKey(ctx, mksNodegroupV2PoolKey, raw)
+}
+
+// mksNodegroupV2PoolNotFound names the pool in a 404 for a dedicated node
+// group, whose pool comes from the provider at create, not from its segment.
+func mksNodegroupV2PoolNotFound(err error, dedicated bool, pool string) error {
+	if !dedicated || !isMKSV2NotFound(err) {
+		return err
+	}
+
+	return fmt.Errorf("%w; looked up in pool %s: a dedicated node group takes the pool from the provider region "+
+		"when it is created, so set region of the provider to the pool of the cluster", err, pool)
 }
 
 // poolClient builds the client for the provider project and the pool, or the
@@ -1159,7 +1231,8 @@ func (r *mksNodegroupV2Resource) resolvePricePlan(ctx context.Context, plan *mks
 }
 
 // readPricePlanName fills price_plan_name from the UUID the API returns when
-// the state has none, as after an import, like selectel_dedicated_server_v1.
+// the state has none, as after an import, and fails for a UUID the price plans
+// lack, like selectel_dedicated_server_v1.
 func (r *mksNodegroupV2Resource) readPricePlanName(ctx context.Context, m *mksNodegroupV2Model) diag.Diagnostics {
 	if !m.isDedicated() {
 		return nil
@@ -1178,6 +1251,10 @@ func (r *mksNodegroupV2Resource) readPricePlanName(ctx context.Context, m *mksNo
 	}
 	plan := plans.FindOneID(cfg.PricePlanUUID.ValueString())
 	if plan == nil {
+		// A null name would make the configured one replace the node group.
+		diags.AddError("Error reading node group", fmt.Sprintf("price plan %s of the node group is not among the "+
+			"price plans of the dedicated servers API, so price_plan_name can't be read", cfg.PricePlanUUID.ValueString()))
+
 		return diags
 	}
 	cfg.PricePlanName = types.StringValue(plan.Name)
@@ -1191,6 +1268,18 @@ func (r *mksNodegroupV2Resource) readPricePlanName(ctx context.Context, m *mksNo
 // isDedicated tells a dedicated node group from a cloud one.
 func (m *mksNodegroupV2Model) isDedicated() bool {
 	return !m.DedicatedNodegroupConfig.IsNull() && !m.DedicatedNodegroupConfig.IsUnknown()
+}
+
+// defaultTimeout is the default of every timeout of the node group: a resize
+// of a dedicated node group orders servers and a delete waits for their
+// cancellation with the same mk-cluster-bm limits as a create
+// (create_dedicated_servers.go:72-93, delete_dedicated_nodegroup.go:143-149).
+func (m *mksNodegroupV2Model) defaultTimeout() time.Duration {
+	if m.isDedicated() {
+		return mksNodegroupV2DedicatedCreateTimeout
+	}
+
+	return mksClusterV2DefaultTimeout
 }
 
 // createMKSNodegroupV2 creates the node group and finds its ID: the API

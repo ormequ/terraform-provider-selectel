@@ -930,6 +930,12 @@ func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 		count := opts.Count
 		f.addNodegroupTask(clusterID, id, "CLUSTER_RESIZE", func() {
 			ng := f.nodegroups[id]
+			if ng.DedicatedNodegroupConfig != nil && ng.Cidr == nil {
+				// mk-conductor stores the subnet mk-cluster-bm allocated
+				// (internal/pkg/msg/subscribe/mkclusterbm.go:1535, :1551-1552),
+				// and the API returns it (apiadapter/nodegroups.go:80-82).
+				ng.Cidr = new(mksV2FakeAllocatedCIDR)
+			}
 			ng.Status = mksclient.NodegroupDetailedStatusACTIVE
 			ng.Nodes = mksV2FakeNodes(id, count)
 			f.nodegroups[id] = ng
@@ -1084,6 +1090,10 @@ func (f *mksV2Fake) addNodegroupTask(clusterID, nodegroupID, taskType string, ef
 	f.addTask(clusterID, taskType, effect)
 	f.tasks[len(f.tasks)-1].task.NodegroupId = &nodegroupID
 }
+
+// mksV2FakeAllocatedCIDR is the cidr the fake allocates to a dedicated node
+// group created without one.
+const mksV2FakeAllocatedCIDR = "10.10.0.0/24"
 
 func mksV2FakeNodes(nodegroupID string, count int64) []mksclient.Node {
 	nodes := make([]mksclient.Node, count)

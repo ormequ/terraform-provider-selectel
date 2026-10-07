@@ -10,7 +10,7 @@ Creates and manages a Managed Kubernetes node group of cloud or dedicated server
 
 A node group is either a cloud one, with `cloud_nodegroup_config`, or a dedicated one, with `dedicated_nodegroup_config`. Set exactly one of them. The `workers_type` of the cluster decides which one is allowed: a `CLOUD` cluster accepts only cloud node groups, a `DEDICATED` cluster accepts only dedicated servers, and changing `workers_type` creates a new cluster.
 
-The node group takes the project from the provider configuration: set `project_id` in the provider or the `INFRA_PROJECT_ID` environment variable. The pool of a cloud node group is derived from `segment`. A dedicated node group takes the pool from the provider configuration: set `region` in the provider or the `INFRA_REGION` environment variable to the pool of the cluster.
+The node group takes the project from the provider configuration: set `project_id` in the provider or the `INFRA_PROJECT_ID` environment variable. The pool of a cloud node group is derived from `segment`. A dedicated node group takes the pool from the provider configuration: set `region` in the provider or the `INFRA_REGION` environment variable to the pool of the cluster. The provider keeps that pool after the create or the import, so a later change of `region` does not affect the node group.
 
 The resource waits for the node group tasks of every operation. When a task fails, the operation fails with the task type, ID and error details.
 
@@ -108,13 +108,13 @@ resource "selectel_mks_nodegroup_v2" "nodegroup_dedicated" {
 
   * `service_uuid` - (Required) Unique identifier of the dedicated server configuration. Retrieved from the `configurations[].id` attribute of the [selectel_dedicated_configuration_v1](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/dedicated_configuration_v1) data source.
 
-  * `price_plan_name` - (Required) Name of the price plan of the servers. Available price plans are `1 day`, `1 month`, `3 months`, `6 months`, `12 months`, and `12 months • monthly payment`. The provider resolves the name to `price_plan_uuid` at plan, so an unknown name fails the plan. Learn more about price plans in the [Payment model and prices of a dedicated server](https://docs.selectel.ru/en/dedicated/about/payment).
+  * `price_plan_name` - (Required) Name of the price plan of the servers. Available price plans are `1 day`, `1 month`, `3 month`, `6 month`, `12 month`, and `12 months • monthly payment`. The provider resolves the name to `price_plan_uuid` at plan, so an unknown name fails the plan. Learn more about price plans in the [Payment model and prices of a dedicated server](https://docs.selectel.ru/en/dedicated/about/payment).
 
   * `root_size_gb` - (Optional) Size of the root partition of each server in GB, at least `30`. If omitted, `100` is used.
 
   * `create_storage_partition` - (Optional) Creates a storage partition on the fastest disk of each server. Boolean flag, the default value is `true`.
 
-  * `currency` - (Optional) Balance that pays for the servers. Available values are `main` and `bonus`. If omitted, `main` is used.
+  * `currency` - (Optional) Balance that pays for the servers ordered at create. Available values are `main` and `bonus`. If omitted, `main` is used. A resize always pays for the new servers from `main`.
 
 * `cidr` - (Optional) CIDR of the dedicated node group network, a private `/24` network, for example, `10.20.30.0/24`. Changing this creates a new node group. Applies to dedicated node groups only: setting it for a cloud node group fails the plan.
 
@@ -140,7 +140,7 @@ resource "selectel_mks_nodegroup_v2" "nodegroup_dedicated" {
 
 * `preemptible` - (Optional) Enables or disables the use of preemptible nodes. Changing this creates a new node group. Boolean flag, the default value is `false`. Cloud node groups only. Learn more about [Preemptible node groups](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/preemptible-node-groups/).
 
-* `timeouts` - (Optional) Timeouts of the `create`, `update` and `delete` operations, for example, `30m`. The default value of each is `60m`, except `create` of a dedicated node group, `160m`: ordering and installing the servers can take that long.
+* `timeouts` - (Optional) Timeouts of the `create`, `update` and `delete` operations, for example, `30m`. The default value of each is `60m`, except for a dedicated node group, `160m`: ordering and installing the servers on a create or a resize, and cancelling them on a delete, can take that long.
 
 ## Attributes Reference
 

@@ -14,7 +14,9 @@ import (
 	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/selectel/mks-go/pkg/v1/kubeoptions"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/cluster"
@@ -325,7 +327,38 @@ func (d *mksKubeOptionsV2DataSource) filterViews(views []*kubeoptions.View, filt
 // mksV2PollInterval is how often the _v2 waiters poll mk-api-v2. Tests shorten it.
 var mksV2PollInterval = 10 * time.Second
 
-const mksV2TaskPageSize = 100
+// mksV2ReadAfterWaitTimeout bounds the read that saves a created object after
+// its wait failed, which can be a timeout or an interrupt.
+const mksV2ReadAfterWaitTimeout = 2 * time.Minute
+
+// mksV2ReadAfterWaitContext outlives ctx, so a created object can still be
+// read and saved when the wait for it ran out of time or was interrupted.
+func mksV2ReadAfterWaitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), mksV2ReadAfterWaitTimeout)
+}
+
+// mksV2PlannedState sets state to the plan with every unknown value null. It
+// saves a created object that could not be read, so Terraform keeps it as
+// tainted instead of losing it.
+func mksV2PlannedState(plan tfsdk.Plan, state *tfsdk.State) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	raw, err := tftypes.Transform(plan.Raw, func(_ *tftypes.AttributePath, v tftypes.Value) (tftypes.Value, error) {
+		if !v.IsKnown() {
+			return tftypes.NewValue(v.Type(), nil), nil
+		}
+
+		return v, nil
+	})
+	if err != nil {
+		diags.AddError("Error saving the planned state", err.Error())
+
+		return diags
+	}
+	state.Raw = raw
+
+	return diags
+}
 
 // isMKSV2NotFound reports whether mk-api-v2 answered 404.
 func isMKSV2NotFound(err error) bool {
@@ -437,23 +470,19 @@ func (w *mksV2TaskWaiter) waitDeleted(ctx context.Context, get func() error) err
 	})
 }
 
-// list returns every task of the cluster in the waiter scope.
+// list returns every task of the cluster in the waiter scope. It takes them
+// in one call: the API orders tasks only by started_at, which tasks of one
+// request share, so LIMIT/OFFSET pages could skip or repeat a task.
 func (w *mksV2TaskWaiter) list(ctx context.Context) ([]mksclient.Task, error) {
-	var result []mksclient.Task
-	for offset := uint64(0); ; offset += mksV2TaskPageSize {
-		page, err := task.List(ctx, w.client, w.clusterID, mksV2TaskPageSize, offset)
-		if err != nil {
-			return nil, fmt.Errorf("error listing tasks of cluster %s: %w", w.clusterID, err)
-		}
-		for _, t := range page {
-			if valueOrZero(t.NodegroupId) == w.nodegroupID {
-				result = append(result, t)
-			}
-		}
-		if len(page) < mksV2TaskPageSize {
-			return result, nil
-		}
+	// The API turns limit 0 into no LIMIT.
+	tasks, err := task.List(ctx, w.client, w.clusterID, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("error listing tasks of cluster %s: %w", w.clusterID, err)
 	}
+
+	return slices.DeleteFunc(tasks, func(t mksclient.Task) bool {
+		return valueOrZero(t.NodegroupId) != w.nodegroupID
+	}), nil
 }
 
 func (w *mksV2TaskWaiter) newTasks(ctx context.Context) ([]mksclient.Task, error) {

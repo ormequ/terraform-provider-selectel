@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"testing"
@@ -587,6 +588,433 @@ func TestMKSClusterV2KubeVersion(t *testing.T) {
 				t.Errorf("mksClusterV2KubeVersion(%q, %q) = %q, want %q", tt.prior, tt.actual, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMKSClusterV2ResourceCreateTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		// readFails makes the read after the wait fail too.
+		readFails bool
+		wantError string
+	}{
+		{name: "read after the wait succeeds", wantError: "Error waiting for the cluster to become ready"},
+		{name: "read after the wait fails", readFails: true, wantError: "Error reading cluster"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useMKSV2TestConfig(t)
+			fake := newMKSV2Fake(t)
+			fake.stickTasks("CREATE_CLUSTER", true)
+			if tt.readFails {
+				fake.fail(mksV2RouteCluster, http.StatusInternalServerError)
+			}
+
+			config := testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  timeouts {
+    create = "1s"
+  }
+`)
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				CheckDestroy:             testMKSClusterV2Destroyed(fake),
+				Steps: []resource.TestStep{
+					{
+						Config:      config,
+						ExpectError: testMKSClusterV2Error(tt.wantError + `(?s:.*)context deadline exceeded`),
+					},
+					{
+						// The timed-out cluster is in state, tainted: the
+						// next apply deletes it and creates a new one.
+						PreConfig: func() {
+							calls := fake.callCount(mksV2RouteCreateCluster)
+							if calls != 1 {
+								t.Errorf("the failed apply sent %d create requests, want 1", calls)
+							}
+							fake.stickTasks("CREATE_CLUSTER", false)
+							fake.fail(mksV2RouteCluster, 0)
+						},
+						Config: config,
+						Check: resource.ComposeTestCheckFunc(
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "id", testMKSV2ClusterID),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "status", "ACTIVE"),
+							testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateCluster: 2, mksV2RouteDeleteCluster: 1}),
+						),
+					},
+				},
+			})
+		})
+	}
+}
+
+func TestMKSClusterV2ResourceX509OnCreate(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  kubernetes_options = {
+    feature_gates        = ["TopologyAwareHints"]
+    x509_ca_certificates = "Y2VydA=="
+  }
+`),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.x509_ca_certificates", "Y2VydA=="),
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "status", "ACTIVE"),
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateCluster: 1, mksV2RoutePatchCluster: 1}),
+					func(_ *terraform.State) error {
+						// Create ignores x509, so it must come with a PATCH of
+						// the whole kubernetes_options.
+						body, _ := fake.lastBody(t, mksV2RoutePatchCluster)["cluster"].(map[string]any)
+						options, _ := body["kubernetes_options"].(map[string]any)
+						if len(body) != 1 || options["x509_ca_certificates"] != "Y2VydA==" ||
+							fmt.Sprint(options["feature_gates"]) != "[TopologyAwareHints]" {
+							return fmt.Errorf("PATCH sent %v, want the whole kubernetes_options with x509", body)
+						}
+						stored := fake.storedX509(testMKSV2ClusterID)
+						if stored != "Y2VydA==" {
+							return fmt.Errorf("the API stored x509 %q, want Y2VydA==", stored)
+						}
+
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+func TestMKSClusterV2ResourceOIDCCACertsWhitespace(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+
+	config := func(caCerts string) string {
+		return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  kubernetes_options = {
+    oidc = {
+      enabled       = true
+      provider_name = "keycloak"
+      issuer_url    = "https://issuer.example.com"
+      client_id     = "kubernetes"
+      ca_certs      = %q
+    }
+  }
+`, caCerts))
+	}
+	stored := func(want string) resource.TestCheckFunc {
+		return func(_ *terraform.State) error {
+			var got string
+			fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { got = c.KubernetesOptions.Oidc.CaCerts })
+			if got != want {
+				return fmt.Errorf("the API stored ca_certs %q, want %q", got, want)
+			}
+
+			return nil
+		}
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				// Like file("ca.pem"): the API trims the trailing newline.
+				Config: config("cert-1\n"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.ca_certs", "cert-1\n"),
+					stored("cert-1"),
+				),
+			},
+			{
+				Config: config("  cert-2\n"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.ca_certs", "  cert-2\n"),
+					stored("cert-2"),
+				),
+			},
+		},
+	})
+}
+
+func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+
+	config := func(enabled bool) string {
+		return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  kubernetes_options = {
+    oidc = {
+      enabled       = %t
+      provider_name = "keycloak"
+      issuer_url    = "https://issuer.example.com"
+      client_id     = "kubernetes"
+      ca_certs      = "cert"
+    }
+  }
+`, enabled))
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: config(true),
+			},
+			{
+				// The fields stay in the configuration; the API wipes them.
+				Config: config(false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.enabled", "false"),
+					func(_ *terraform.State) error {
+						var got mksclient.OIDC
+						fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { got = c.KubernetesOptions.Oidc })
+						if got != (mksclient.OIDC{}) {
+							return fmt.Errorf("the API kept OIDC %+v, want it wiped", got)
+						}
+
+						return nil
+					},
+				),
+			},
+			{
+				// Enabling it again sends the fields from the configuration.
+				Config: config(true),
+				Check: func(_ *terraform.State) error {
+					var got mksclient.OIDC
+					fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { got = c.KubernetesOptions.Oidc })
+					if !got.Enabled || got.IssuerUrl != "https://issuer.example.com" || got.CaCerts != "cert" {
+						return fmt.Errorf("the API got OIDC %+v, want it enabled with the configured fields", got)
+					}
+
+					return nil
+				},
+			},
+		},
+	})
+}
+
+func TestMKSClusterV2ResourceStatusOnUpdate(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+
+	config := func(admissionControllers string, hubbleRelay bool) string {
+		return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  cni_type     = "CILIUM"
+  cni_cilium_settings = {
+    hubble_relay = %t
+  }
+  kubernetes_options = {
+    admission_controllers = [%s]
+  }
+`, hubbleRelay, admissionControllers))
+	}
+	// The refresh sees the cluster in its maintenance window; the finished
+	// task leaves it ACTIVE.
+	inMaintenance := func() {
+		fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { c.Status = "MAINTENANCE" })
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: config(`"NodeRestriction"`, true),
+			},
+			{
+				PreConfig: inMaintenance,
+				Config:    config(`"NodeRestriction", "PodNodeSelector"`, true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "status", "ACTIVE"),
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RoutePatchCluster: 1}),
+				),
+			},
+			{
+				PreConfig: inMaintenance,
+				Config:    config(`"NodeRestriction", "PodNodeSelector"`, false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "status", "ACTIVE"),
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "cni_cilium_settings.hubble_relay", "false"),
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RoutePatchCluster: 2}),
+				),
+			},
+		},
+	})
+}
+
+func TestMKSClusterV2ResourceCiliumSettingsNeedCilium(t *testing.T) {
+	tests := []struct {
+		name    string
+		cniType string
+	}{
+		{name: "cni_type unset"},
+		{name: "cni_type CALICO", cniType: `cni_type = "CALICO"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useMKSV2TestConfig(t)
+			fake := newMKSV2Fake(t)
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  `+tt.cniType+`
+  cni_cilium_settings = {
+    hubble_relay = false
+  }
+`),
+						PlanOnly:    true,
+						ExpectError: testMKSClusterV2Error(`Cilium settings need the Cilium CNI`),
+					},
+				},
+			})
+			calls := fake.callCount(mksV2RouteCreateCluster)
+			if calls != 0 {
+				t.Errorf("the provider sent %d create requests, want none", calls)
+			}
+		})
+	}
+}
+
+func TestMKSClusterV2ResourceUpdateTaskError(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+	fake.seedKubeVersions(
+		mksclient.KubeVersionInfo{Version: new("1.30.3")},
+		mksclient.KubeVersionInfo{Version: new("1.30.5")},
+	)
+
+	config := func(kubeVersion, admissionControllers string) string {
+		return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = %q
+  workers_type = "CLOUD"
+  kubernetes_options = {
+    admission_controllers = [%s]
+  }
+`, kubeVersion, admissionControllers))
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: config("1.30.3", `"NodeRestriction"`),
+			},
+			{
+				PreConfig: func() { fake.failTasks("UPGRADE_PATCH_VERSION", true) },
+				Config:    config("1.30.5", `"NodeRestriction"`),
+				ExpectError: testMKSClusterV2Error(`task UPGRADE_PATCH_VERSION task-\d+ of cluster ` + testMKSV2ClusterID +
+					` ended in ERROR`),
+			},
+			{
+				// The cluster stays in state with the prior version, so the
+				// upgrade is planned again.
+				PreConfig:          func() { fake.failTasks("UPGRADE_PATCH_VERSION", false) },
+				Config:             config("1.30.5", `"NodeRestriction"`),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config: config("1.30.5", `"NodeRestriction"`),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kube_version", "1.30.5"),
+					// Upgraded in place, not recreated.
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RouteUpgradePatch: 2, mksV2RouteCreateCluster: 1}),
+				),
+			},
+			{
+				PreConfig:   func() { fake.failTasks("UPGRADE_MASTERS_CONFIG", true) },
+				Config:      config("1.30.5", `"NodeRestriction", "PodNodeSelector"`),
+				ExpectError: testMKSClusterV2Error(`task UPGRADE_MASTERS_CONFIG task-\d+ of cluster ` + testMKSV2ClusterID + ` ended in ERROR`),
+			},
+			{
+				// The cluster stays in state. The API stored the requested
+				// options before the task ran, so the refresh reads them and
+				// the plan is empty.
+				PreConfig: func() { fake.failTasks("UPGRADE_MASTERS_CONFIG", false) },
+				Config:    config("1.30.5", `"NodeRestriction", "PodNodeSelector"`),
+				PlanOnly:  true,
+			},
+		},
+	})
+}
+
+func TestMKSV2TaskWaiterListsAllTasks(t *testing.T) {
+	fake := newMKSV2Fake(t)
+	fake.seedCluster(mksclient.ClusterDetailed{Id: testMKSV2ClusterID}, "")
+	client, err := newMKSV2ServiceClient("fake-token", fake.server.URL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// More tasks than one page of the old paging; every old one is stuck, so
+	// the wait times out if the snapshot misses any of them.
+	const oldTasks = 250
+	for range oldTasks {
+		fake.seedTask(testMKSV2ClusterID, "", "OLD", true)
+	}
+	waiter, err := newMKSV2TaskWaiter(ctx, client, testMKSV2ClusterID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(waiter.before) != oldTasks {
+		t.Fatalf("the snapshot has %d tasks, want %d", len(waiter.before), oldTasks)
+	}
+	fake.seedTask(testMKSV2ClusterID, "", "NEW", false)
+
+	err = waiter.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait() = %v, want nil", err)
+	}
+	// One call per listing: the snapshot and the new tasks.
+	calls, query := fake.callCount(mksV2RouteTasks), fake.lastQuery(mksV2RouteTasks)
+	if calls != 2 || !strings.Contains(query, "limit=0") {
+		t.Errorf("task list calls %d with query %q, want 2 with limit=0", calls, query)
+	}
+}
+
+// testMKSClusterV2Calls checks how many requests the fake got per route.
+func testMKSClusterV2Calls(fake *mksV2Fake, want map[string]int) resource.TestCheckFunc {
+	return func(_ *terraform.State) error {
+		for route, count := range want {
+			got := fake.callCount(route)
+			if got != count {
+				return fmt.Errorf("%s got %d requests, want %d", route, got, count)
+			}
+		}
+
+		return nil
 	}
 }
 

@@ -2,6 +2,7 @@ package selectel
 
 import (
 	"fmt"
+	"net/http"
 	"slices"
 	"testing"
 
@@ -149,6 +150,71 @@ func TestMKSNodegroupV2ResourceCreateTaskError(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestMKSNodegroupV2ResourceCreateTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		// readFails makes the read after the wait fail too.
+		readFails bool
+		wantError string
+	}{
+		{name: "read after the wait succeeds", wantError: "Error waiting for the node group to become ready"},
+		{name: "read after the wait fails", readFails: true, wantError: "Error reading node group"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useMKSV2TestConfig(t)
+			fake := newMKSV2Fake(t)
+			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+			fake.stickTasks("CLUSTER_RESIZE", true)
+			if tt.readFails {
+				fake.fail(mksV2RouteNodegroup, http.StatusInternalServerError)
+			}
+
+			config := testMKSNodegroupV2Config(testMKSNodegroupV2Flavor + `
+  timeouts {
+    create = "1s"
+    delete = "10s"
+  }
+`)
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-2"),
+				Steps: []resource.TestStep{
+					{
+						Config:      config,
+						ExpectError: testMKSClusterV2Error(tt.wantError + `(?s:.*)context deadline exceeded`),
+					},
+					{
+						// The timed-out nodegroup is in state, tainted: the
+						// next apply deletes it and creates a new one.
+						PreConfig: func() {
+							calls := fake.callCount(mksV2RouteCreateNodegroups)
+							if calls != 1 {
+								t.Errorf("the failed apply sent %d create requests, want 1", calls)
+							}
+							fake.stickTasks("CLUSTER_RESIZE", false)
+							fake.fail(mksV2RouteNodegroup, 0)
+						},
+						Config: config,
+						Check: resource.ComposeTestCheckFunc(
+							resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "id", testMKSV2ClusterID+"/ng-2"),
+							testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateNodegroups: 2, mksV2RouteDeleteNodegroup: 1}),
+							func(_ *terraform.State) error {
+								if fake.hasNodegroup("ng-1") {
+									return fmt.Errorf("the tainted ng-1 was not deleted")
+								}
+
+								return nil
+							},
+						),
+					},
+				},
+			})
+		})
+	}
 }
 
 func TestMKSNodegroupV2ResourceConfigValidation(t *testing.T) {

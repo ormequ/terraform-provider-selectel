@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
@@ -23,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/cluster"
 	"github.com/selectel/mks-go/v2/pkg/kubeversion"
@@ -62,13 +64,13 @@ var (
 		"client_id":      types.StringType,
 		"username_claim": types.StringType,
 		"groups_claim":   types.StringType,
-		"ca_certs":       types.StringType,
+		"ca_certs":       mksV2TrimmedStringType{},
 	}
 	mksClusterV2KubeOptionsAttrTypes = map[string]attr.Type{
 		"feature_gates":         types.SetType{ElemType: types.StringType},
 		"admission_controllers": types.SetType{ElemType: types.StringType},
 		"audit_logs":            types.ObjectType{AttrTypes: mksClusterV2AuditLogsAttrTypes},
-		"oidc":                  types.ObjectType{AttrTypes: mksClusterV2OIDCAttrTypes},
+		"oidc":                  newMKSClusterV2OIDCType(),
 		"x509_ca_certificates":  types.StringType,
 	}
 )
@@ -103,11 +105,11 @@ type mksClusterV2CiliumModel struct {
 }
 
 type mksClusterV2KubeOptionsModel struct {
-	FeatureGates         types.Set    `tfsdk:"feature_gates"`
-	AdmissionControllers types.Set    `tfsdk:"admission_controllers"`
-	AuditLogs            types.Object `tfsdk:"audit_logs"`
-	OIDC                 types.Object `tfsdk:"oidc"`
-	X509CACertificates   types.String `tfsdk:"x509_ca_certificates"`
+	FeatureGates         types.Set             `tfsdk:"feature_gates"`
+	AdmissionControllers types.Set             `tfsdk:"admission_controllers"`
+	AuditLogs            types.Object          `tfsdk:"audit_logs"`
+	OIDC                 mksClusterV2OIDCValue `tfsdk:"oidc"`
+	X509CACertificates   types.String          `tfsdk:"x509_ca_certificates"`
 }
 
 type mksClusterV2AuditLogsModel struct {
@@ -116,13 +118,13 @@ type mksClusterV2AuditLogsModel struct {
 }
 
 type mksClusterV2OIDCModel struct {
-	Enabled       types.Bool   `tfsdk:"enabled"`
-	ProviderName  types.String `tfsdk:"provider_name"`
-	IssuerURL     types.String `tfsdk:"issuer_url"`
-	ClientID      types.String `tfsdk:"client_id"`
-	UsernameClaim types.String `tfsdk:"username_claim"`
-	GroupsClaim   types.String `tfsdk:"groups_claim"`
-	CACerts       types.String `tfsdk:"ca_certs"`
+	Enabled       types.Bool              `tfsdk:"enabled"`
+	ProviderName  types.String            `tfsdk:"provider_name"`
+	IssuerURL     types.String            `tfsdk:"issuer_url"`
+	ClientID      types.String            `tfsdk:"client_id"`
+	UsernameClaim types.String            `tfsdk:"username_claim"`
+	GroupsClaim   types.String            `tfsdk:"groups_claim"`
+	CACerts       mksV2TrimmedStringValue `tfsdk:"ca_certs"`
 }
 
 type mksClusterV2Resource struct {
@@ -249,7 +251,7 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 			"cni_cilium_settings": schema.SingleNestedAttribute{
 				Optional:      true,
 				Computed:      true,
-				Description:   "Settings of the Cilium CNI. Used only when `cni_type` is `CILIUM`.",
+				Description:   "Settings of the Cilium CNI. Can be set only when `cni_type` is `CILIUM`.",
 				PlanModifiers: keepObject,
 				Attributes: map[string]schema.Attribute{
 					"envoy_daemonset": optionalBool("Enables the Envoy DaemonSet for Cilium."),
@@ -290,18 +292,27 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 						},
 					},
 					"oidc": schema.SingleNestedAttribute{
-						Optional:      true,
-						Computed:      true,
-						Description:   "Connection of an OpenID Connect (OIDC) provider to the cluster.",
+						Optional: true,
+						Computed: true,
+						Description: "Connection of an OpenID Connect (OIDC) provider to the cluster. " +
+							"Disabling OIDC clears its other settings in the cluster.",
+						CustomType:    newMKSClusterV2OIDCType(),
 						PlanModifiers: keepObject,
 						Attributes: map[string]schema.Attribute{
-							"enabled":        optionalBool("Enables authentication with OIDC."),
-							"provider_name":  optionalString("Name of the connection, for identification only."),
+							"enabled": optionalBool("Enables authentication with OIDC."),
+							"provider_name": optionalString("Name of the connection, for identification only. " +
+								"The API does not apply a change of only this field."),
 							"issuer_url":     optionalString("URL of the OIDC provider. It must start with `https://`."),
 							"client_id":      optionalString("Client ID that all tokens must be issued for."),
 							"username_claim": optionalString("JWT claim to use as the username."),
 							"groups_claim":   optionalString("JWT claim to use as the user's group."),
-							"ca_certs":       optionalString("CA certificates of the OIDC provider in the PEM format."),
+							"ca_certs": schema.StringAttribute{
+								Optional:      true,
+								Computed:      true,
+								CustomType:    mksV2TrimmedStringType{},
+								Description:   "CA certificates of the OIDC provider in the PEM format. Leading and trailing whitespace is ignored.",
+								PlanModifiers: keepString,
+							},
 						},
 					},
 					"x509_ca_certificates": schema.StringAttribute{
@@ -334,12 +345,24 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 }
 
 func (r *mksClusterV2Resource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	var clusterType types.String
+	var clusterType, cniType types.String
 	var autoUpgrade types.Bool
+	var cilium types.Object
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cluster_type"), &clusterType)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("enable_patch_version_auto_upgrade"), &autoUpgrade)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cni_type"), &cniType)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cni_cilium_settings"), &cilium)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	// The API stores Cilium settings only for a Cilium cluster and returns
+	// null otherwise, see mk-api-v2 handlers/clusters/create.go.
+	if !cilium.IsNull() && !cilium.IsUnknown() && !cniType.IsUnknown() &&
+		cniType.ValueString() != string(mksclient.ClusterCniTypeCILIUM) {
+		resp.Diagnostics.AddAttributeError(path.Root("cni_cilium_settings"),
+			"Cilium settings need the Cilium CNI",
+			"Set cni_type to CILIUM or remove cni_cilium_settings.")
 	}
 
 	// The API rejects it, see mk-api-v2 validate/cluster.go.
@@ -371,9 +394,14 @@ func (r *mksClusterV2Resource) ModifyPlan(ctx context.Context, req resource.Modi
 		}
 	}
 
-	// These follow the changes and cannot be kept from the state.
-	if !plan.KubeVersion.Equal(state.KubeVersion) || !plan.MaintenanceWindowStart.Equal(state.MaintenanceWindowStart) {
+	// Any update can change the status: a task-creating PATCH moves the
+	// cluster to PENDING_UPGRADE_CLUSTER_CONFIG, and a finished task leaves it
+	// ACTIVE or MAINTENANCE, whatever it was at refresh.
+	if !req.Plan.Raw.Equal(req.State.Raw) {
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("status"), types.StringUnknown())...)
+	}
+	// The window end follows these changes and cannot be kept from the state.
+	if !plan.KubeVersion.Equal(state.KubeVersion) || !plan.MaintenanceWindowStart.Equal(state.MaintenanceWindowStart) {
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("maintenance_window_end"), types.StringUnknown())...)
 	}
 }
@@ -387,7 +415,7 @@ func (r *mksClusterV2Resource) Create(ctx context.Context, req resource.CreateRe
 
 	timeout, diags := plan.Timeouts.Create(ctx, mksClusterV2DefaultTimeout)
 	resp.Diagnostics.Append(diags...)
-	client, _, diags := r.client(ctx, plan.ProjectID, plan.Pool.ValueString())
+	client, projectID, diags := r.client(ctx, plan.ProjectID, plan.Pool.ValueString())
 	resp.Diagnostics.Append(diags...)
 	opts, diags := expandMKSClusterV2CreateOpts(ctx, plan)
 	resp.Diagnostics.Append(diags...)
@@ -407,20 +435,81 @@ func (r *mksClusterV2Resource) Create(ctx context.Context, req resource.CreateRe
 
 	waitErr := newMKSV2CreatedTaskWaiter(client, created.Id, "").Wait(ctx)
 
-	// Save the cluster even when a task failed, so Terraform taints it
-	// instead of losing it.
-	got, err := cluster.Get(ctx, client, created.Id)
+	// Save the cluster even when the wait failed, so Terraform taints it
+	// instead of losing it. The wait may have used up ctx.
+	readCtx, readCancel := mksV2ReadAfterWaitContext(ctx)
+	defer readCancel()
+	got, err := cluster.Get(readCtx, client, created.Id)
 	if err != nil {
+		resp.Diagnostics.Append(mksV2PlannedState(req.Plan, &resp.State)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), created.Id)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"), projectID)...)
 		resp.Diagnostics.AddError("Error reading cluster", errGettingObject(objectCluster, created.Id, errors.Join(waitErr, err)).Error())
 
 		return
 	}
 	state := plan
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, plan, true)...)
-	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 	if waitErr != nil {
+		resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 		resp.Diagnostics.AddError("Error waiting for the cluster to become ready", waitErr.Error())
+
+		return
 	}
+
+	x509Err := applyMKSClusterV2X509(ctx, client, &state)
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+	if x509Err != nil {
+		resp.Diagnostics.AddError("Error setting X509 CA certificates of the cluster", errUpdatingObject(objectCluster, created.Id, x509Err).Error())
+	}
+}
+
+// applyMKSClusterV2X509 sends the planned x509_ca_certificates of a created
+// cluster: mk-api-v2 ignores them on create and stores them only on PATCH.
+// The PATCH carries the whole kubernetes_options, because the API replaces
+// them. On error x509_ca_certificates is null in state, since the cluster has
+// none.
+func applyMKSClusterV2X509(ctx context.Context, client *mksv2.ServiceClient, state *mksClusterV2Model) error {
+	var options mksClusterV2KubeOptionsModel
+	diags := state.KubernetesOptions.As(ctx, &options, basetypes.ObjectAsOptions{})
+	if diags.HasError() {
+		return fmt.Errorf("error reading kubernetes_options: %v", diags)
+	}
+	if options.X509CACertificates.ValueString() == "" {
+		return nil
+	}
+
+	kubeOptions, diags := expandMKSClusterV2KubeOptions(ctx, state.KubernetesOptions)
+	if diags.HasError() {
+		return fmt.Errorf("error expanding kubernetes_options: %v", diags)
+	}
+	clusterID := state.ID.ValueString()
+	err := mksV2CallAndWait(ctx, client, clusterID, func() error {
+		_, err := cluster.Patch(ctx, client, clusterID, &mksclient.ClusterUpdateStruct{KubernetesOptions: kubeOptions})
+
+		return err
+	})
+	var got *mksclient.ClusterDetailed
+	if err == nil {
+		got, err = cluster.Get(ctx, client, clusterID)
+	}
+	if err != nil {
+		options.X509CACertificates = types.StringNull()
+		state.KubernetesOptions, diags = types.ObjectValueFrom(ctx, mksClusterV2KubeOptionsAttrTypes, options)
+		if diags.HasError() {
+			return errors.Join(err, fmt.Errorf("error saving kubernetes_options: %v", diags))
+		}
+
+		return err
+	}
+
+	prior := *state
+	diags = state.fromAPI(ctx, got, prior, true)
+	if diags.HasError() {
+		return fmt.Errorf("error reading the cluster: %v", diags)
+	}
+
+	return nil
 }
 
 func (r *mksClusterV2Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -933,16 +1022,17 @@ func flattenMKSClusterV2KubeOptions(ctx context.Context, o mksclient.KubernetesO
 		SecretName: types.StringValue(o.AuditLogs.SecretName),
 	})
 	diags.Append(d...)
-	oidc, d := types.ObjectValueFrom(ctx, mksClusterV2OIDCAttrTypes, mksClusterV2OIDCModel{
+	oidcObject, d := types.ObjectValueFrom(ctx, mksClusterV2OIDCAttrTypes, mksClusterV2OIDCModel{
 		Enabled:       types.BoolValue(o.Oidc.Enabled),
 		ProviderName:  types.StringValue(o.Oidc.ProviderName),
 		IssuerURL:     types.StringValue(o.Oidc.IssuerUrl),
 		ClientID:      types.StringValue(o.Oidc.ClientId),
 		UsernameClaim: types.StringValue(o.Oidc.UsernameClaim),
 		GroupsClaim:   types.StringValue(o.Oidc.GroupsClaim),
-		CACerts:       types.StringValue(o.Oidc.CaCerts),
+		CACerts:       mksV2TrimmedString(o.Oidc.CaCerts),
 	})
 	diags.Append(d...)
+	oidc := mksClusterV2OIDCValue{ObjectValue: oidcObject}
 
 	obj, d := types.ObjectValueFrom(ctx, mksClusterV2KubeOptionsAttrTypes, mksClusterV2KubeOptionsModel{
 		FeatureGates:         stringSet(o.FeatureGates),
@@ -972,4 +1062,159 @@ func knownStringPointer(v types.String) *string {
 	}
 
 	return v.ValueStringPointer()
+}
+
+// mksV2TrimmedStringType is a string whose surrounding whitespace does not
+// matter: mk-api-v2 trims oidc.ca_certs, while file("ca.pem") keeps the
+// trailing newline.
+type mksV2TrimmedStringType struct {
+	basetypes.StringType
+}
+
+var _ basetypes.StringTypable = mksV2TrimmedStringType{}
+
+func (t mksV2TrimmedStringType) Equal(o attr.Type) bool {
+	_, ok := o.(mksV2TrimmedStringType)
+
+	return ok
+}
+
+func (t mksV2TrimmedStringType) String() string {
+	return "mksV2TrimmedStringType"
+}
+
+func (t mksV2TrimmedStringType) ValueFromString(_ context.Context, in basetypes.StringValue) (basetypes.StringValuable, diag.Diagnostics) {
+	return mksV2TrimmedStringValue{StringValue: in}, nil
+}
+
+func (t mksV2TrimmedStringType) ValueFromTerraform(ctx context.Context, in tftypes.Value) (attr.Value, error) {
+	value, err := t.StringType.ValueFromTerraform(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	stringValue, ok := value.(basetypes.StringValue)
+	if !ok {
+		return nil, fmt.Errorf("unexpected value type %T", value)
+	}
+
+	return mksV2TrimmedStringValue{StringValue: stringValue}, nil
+}
+
+func (t mksV2TrimmedStringType) ValueType(_ context.Context) attr.Value {
+	return mksV2TrimmedStringValue{}
+}
+
+type mksV2TrimmedStringValue struct {
+	basetypes.StringValue
+}
+
+var _ basetypes.StringValuableWithSemanticEquals = mksV2TrimmedStringValue{}
+
+func (v mksV2TrimmedStringValue) Equal(o attr.Value) bool {
+	other, ok := o.(mksV2TrimmedStringValue)
+
+	return ok && v.StringValue.Equal(other.StringValue)
+}
+
+func (v mksV2TrimmedStringValue) Type(_ context.Context) attr.Type {
+	return mksV2TrimmedStringType{}
+}
+
+func (v mksV2TrimmedStringValue) StringSemanticEquals(_ context.Context, newValuable basetypes.StringValuable) (bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	newValue, ok := newValuable.(mksV2TrimmedStringValue)
+	if !ok {
+		diags.AddError("Semantic Equality Check Error", fmt.Sprintf("Expected mksV2TrimmedStringValue, got %T.", newValuable))
+
+		return false, diags
+	}
+
+	return strings.TrimSpace(v.ValueString()) == strings.TrimSpace(newValue.ValueString()), diags
+}
+
+func mksV2TrimmedString(value string) mksV2TrimmedStringValue {
+	return mksV2TrimmedStringValue{StringValue: types.StringValue(value)}
+}
+
+// mksClusterV2OIDCType is the oidc object. mk-api-v2 wipes every field of a
+// disabled OIDC, so two disabled values are equal whatever their other fields
+// hold: the fields can stay in the configuration while OIDC is off.
+type mksClusterV2OIDCType struct {
+	basetypes.ObjectType
+}
+
+var _ basetypes.ObjectTypable = mksClusterV2OIDCType{}
+
+func newMKSClusterV2OIDCType() mksClusterV2OIDCType {
+	return mksClusterV2OIDCType{ObjectType: basetypes.ObjectType{AttrTypes: mksClusterV2OIDCAttrTypes}}
+}
+
+func (t mksClusterV2OIDCType) Equal(o attr.Type) bool {
+	other, ok := o.(mksClusterV2OIDCType)
+
+	return ok && t.ObjectType.Equal(other.ObjectType)
+}
+
+func (t mksClusterV2OIDCType) String() string {
+	return "mksClusterV2OIDCType"
+}
+
+func (t mksClusterV2OIDCType) ValueFromObject(_ context.Context, in basetypes.ObjectValue) (basetypes.ObjectValuable, diag.Diagnostics) {
+	return mksClusterV2OIDCValue{ObjectValue: in}, nil
+}
+
+func (t mksClusterV2OIDCType) ValueFromTerraform(ctx context.Context, in tftypes.Value) (attr.Value, error) {
+	value, err := t.ObjectType.ValueFromTerraform(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	objectValue, ok := value.(basetypes.ObjectValue)
+	if !ok {
+		return nil, fmt.Errorf("unexpected value type %T", value)
+	}
+
+	return mksClusterV2OIDCValue{ObjectValue: objectValue}, nil
+}
+
+func (t mksClusterV2OIDCType) ValueType(_ context.Context) attr.Value {
+	return mksClusterV2OIDCValue{}
+}
+
+type mksClusterV2OIDCValue struct {
+	basetypes.ObjectValue
+}
+
+var _ basetypes.ObjectValuableWithSemanticEquals = mksClusterV2OIDCValue{}
+
+func (v mksClusterV2OIDCValue) Equal(o attr.Value) bool {
+	other, ok := o.(mksClusterV2OIDCValue)
+
+	return ok && v.ObjectValue.Equal(other.ObjectValue)
+}
+
+func (v mksClusterV2OIDCValue) Type(_ context.Context) attr.Type {
+	return newMKSClusterV2OIDCType()
+}
+
+func (v mksClusterV2OIDCValue) ObjectSemanticEquals(_ context.Context, priorValuable basetypes.ObjectValuable) (bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	prior, ok := priorValuable.(mksClusterV2OIDCValue)
+	if !ok {
+		diags.AddError("Semantic Equality Check Error", fmt.Sprintf("Expected mksClusterV2OIDCValue, got %T.", priorValuable))
+
+		return false, diags
+	}
+
+	return v.disabled() && prior.disabled(), diags
+}
+
+func (v mksClusterV2OIDCValue) disabled() bool {
+	if v.IsNull() || v.IsUnknown() {
+		return false
+	}
+	enabled, ok := v.Attributes()["enabled"].(types.Bool)
+
+	return ok && !enabled.IsNull() && !enabled.IsUnknown() && !enabled.ValueBool()
 }

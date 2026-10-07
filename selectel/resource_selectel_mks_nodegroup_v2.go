@@ -472,10 +472,14 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 
 	waitErr := newMKSV2CreatedTaskWaiter(client, clusterID, nodegroupID).Wait(ctx)
 
-	// Save the node group even when a task failed, so Terraform taints it
-	// instead of losing it.
-	got, err := nodegroup.Get(ctx, client, clusterID, nodegroupID)
+	// Save the node group even when the wait failed, so Terraform taints it
+	// instead of losing it. The wait may have used up ctx.
+	readCtx, readCancel := mksV2ReadAfterWaitContext(ctx)
+	defer readCancel()
+	got, err := nodegroup.Get(readCtx, client, clusterID, nodegroupID)
 	if err != nil {
+		resp.Diagnostics.Append(mksV2PlannedState(req.Plan, &resp.State)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), clusterID+"/"+nodegroupID)...)
 		resp.Diagnostics.AddError("Error reading node group",
 			errGettingObject(objectNodegroup, clusterID+"/"+nodegroupID, errors.Join(waitErr, err)).Error())
 

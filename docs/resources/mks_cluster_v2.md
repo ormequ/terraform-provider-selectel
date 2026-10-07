@@ -83,7 +83,7 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
 * `cni_type` - (Optional) Type of CNI used by the cluster. Changing this creates a new cluster. Available values are `CALICO` and `CILIUM`. If omitted, `CALICO` is used.
 
-* `cni_cilium_settings` - (Optional) Settings for the Cilium CNI. Used only when `cni_type` is `CILIUM`.
+* `cni_cilium_settings` - (Optional) Settings for the Cilium CNI. Can be set only when `cni_type` is `CILIUM`.
 
   * `envoy_daemonset` - (Optional) Enables [Envoy DaemonSet for Cilium CNI](https://docs.cilium.io/en/latest/security/network/proxy/envoy/#envoy). Boolean flag.
 
@@ -101,11 +101,11 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
     * `secret_name` - (Optional) Name of the secret in the `kube-system` namespace with the credentials of the logging system.
 
-  * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection).
+  * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection). Disabling OIDC clears its other settings in the cluster; they can stay in the configuration and are sent again when OIDC is enabled.
 
     * `enabled` - (Optional) Enables or disables authentication with OpenID Connect.
 
-    * `provider_name` - (Optional) Name of the connection, for identification only. Required when `enabled` is `true`.
+    * `provider_name` - (Optional) Name of the connection, for identification only. Required when `enabled` is `true`. The API does not apply a change of only this field.
 
     * `issuer_url` - (Optional) URL of the OIDC provider. It must start with `https://`. Required when `enabled` is `true`.
 
@@ -115,7 +115,7 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
     * `groups_claim` - (Optional) JWT claim to use as the user's group.
 
-    * `ca_certs` - (Optional) CA certificates of the OIDC provider in the PEM format.
+    * `ca_certs` - (Optional) CA certificates of the OIDC provider in the PEM format. Leading and trailing whitespace is ignored.
 
   * `x509_ca_certificates` - (Optional) Custom X509 CA certificates for the cluster components, base64-encoded. The API does not return them, so an imported cluster has no value.
 

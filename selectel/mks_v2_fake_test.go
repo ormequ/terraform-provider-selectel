@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,6 +40,12 @@ type mksV2Fake struct {
 	tasks    []*mksV2FakeTask
 	// failedTaskTypes makes new tasks of a type end in ERROR.
 	failedTaskTypes map[string]bool
+	// stuckTaskTypes keeps the running tasks of a type running.
+	stuckTaskTypes map[string]bool
+	// x509CACertificates keeps what PATCH stored; the API never returns it.
+	x509CACertificates map[string]string
+	// queries keeps the last query string of every route.
+	queries map[string]string
 	// bodies keeps the last request body of every route, calls counts them.
 	bodies map[string][]byte
 	calls  map[string]int
@@ -94,9 +101,12 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 		kubeconfigs: map[string]string{},
 		failures:    map[string]int{},
 
-		failedTaskTypes: map[string]bool{},
-		bodies:          map[string][]byte{},
-		calls:           map[string]int{},
+		failedTaskTypes:    map[string]bool{},
+		stuckTaskTypes:     map[string]bool{},
+		x509CACertificates: map[string]string{},
+		queries:            map[string]string{},
+		bodies:             map[string][]byte{},
+		calls:              map[string]int{},
 	}
 
 	mux := http.NewServeMux()
@@ -153,6 +163,7 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 
 		f.userAgents = append(f.userAgents, r.Header.Get("User-Agent"))
 		f.calls[pattern]++
+		f.queries[pattern] = r.URL.RawQuery
 		body, _ := io.ReadAll(r.Body)
 		if len(body) > 0 {
 			f.bodies[pattern] = body
@@ -242,21 +253,19 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	if opts.KubernetesOptions != nil {
 		c.KubernetesOptions = *opts.KubernetesOptions
-		// The API never returns them.
+		c.KubernetesOptions.Oidc = normaliseMKSV2FakeOIDC(c.KubernetesOptions.Oidc)
+		// Create ignores them, see mk-api-v2 protoadapter/create_cluster.go.
 		c.KubernetesOptions.X509CaCertificates = ""
 	}
 	f.clusters[c.Id] = c
 
-	f.addTask(c.Id, "CREATE_CLUSTER", func() {
-		c := f.clusters[testMKSV2ClusterID]
-		c.Status = "ACTIVE"
-		f.clusters[c.Id] = c
-	})
+	f.addTask(c.Id, "CREATE_CLUSTER", f.activateCluster(c.Id))
 	writeMKSV2JSON(w, http.StatusCreated, mksclient.ClusterResp{Cluster: &c})
 }
 
-// patchCluster applies the sent fields. Like the API, only a kubernetes_options
-// change starts a task.
+// patchCluster applies the sent fields like mk-api-v2 handlers/clusters/
+// partial_update.go: a kube options or Cilium change starts a task and moves
+// the cluster to PENDING_UPGRADE_CLUSTER_CONFIG until the task is DONE.
 func (f *mksV2Fake) patchCluster(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	c, ok := f.clusters[id]
@@ -280,16 +289,76 @@ func (f *mksV2Fake) patchCluster(w http.ResponseWriter, r *http.Request) {
 	c.EnableAutorepair = valueOr(opts.EnableAutorepair, c.EnableAutorepair)
 	c.EnablePatchVersionAutoUpgrade = valueOr(opts.EnablePatchVersionAutoUpgrade, c.EnablePatchVersionAutoUpgrade)
 	if opts.CniCiliumSettings != nil {
-		c.CniCiliumSettings = opts.CniCiliumSettings
+		cilium := valueOrZero(c.CniCiliumSettings)
+		cilium.EnvoyDaemonset = cmp.Or(opts.CniCiliumSettings.EnvoyDaemonset, cilium.EnvoyDaemonset)
+		cilium.HubbleRelay = cmp.Or(opts.CniCiliumSettings.HubbleRelay, cilium.HubbleRelay)
+		c.CniCiliumSettings = &cilium
+		c.Status = "PENDING_UPGRADE_CLUSTER_CONFIG"
+		f.addTask(id, "UPGRADE_CLUSTER_CONFIG", f.activateCluster(id))
 	}
-	if opts.KubernetesOptions != nil {
-		c.KubernetesOptions = *opts.KubernetesOptions
-		c.KubernetesOptions.X509CaCertificates = ""
-		f.addTask(id, "UPGRADE_MASTERS_CONFIG", nil)
+	if opts.KubernetesOptions != nil && f.patchKubeOptions(&c, *opts.KubernetesOptions) {
+		c.Status = "PENDING_UPGRADE_CLUSTER_CONFIG"
+		f.addTask(id, "UPGRADE_MASTERS_CONFIG", f.activateCluster(id))
 	}
 	f.clusters[id] = c
 
 	writeMKSV2JSON(w, http.StatusOK, mksclient.ClusterResp{Cluster: &c})
+}
+
+// patchKubeOptions stores the changed options the way the API does and
+// reports whether anything changed: audit_logs only with enabled, OIDC only
+// with a field other than provider_name, x509 whenever it is not empty.
+func (f *mksV2Fake) patchKubeOptions(c *mksclient.ClusterDetailed, requested mksclient.KubernetesOptions) bool {
+	current := &c.KubernetesOptions
+	requested.Oidc = normaliseMKSV2FakeOIDC(requested.Oidc)
+	changed := false
+
+	if !slices.Equal(current.FeatureGates, requested.FeatureGates) {
+		current.FeatureGates = requested.FeatureGates
+		changed = true
+	}
+	if !slices.Equal(current.AdmissionControllers, requested.AdmissionControllers) {
+		current.AdmissionControllers = requested.AdmissionControllers
+		changed = true
+	}
+	if current.AuditLogs.Enabled != requested.AuditLogs.Enabled {
+		current.AuditLogs = requested.AuditLogs
+		changed = true
+	}
+	oidcChanged := current.Oidc
+	oidcChanged.ProviderName = requested.Oidc.ProviderName
+	if oidcChanged != requested.Oidc {
+		current.Oidc = requested.Oidc
+		changed = true
+	}
+	if requested.X509CaCertificates != "" {
+		f.x509CACertificates[c.Id] = requested.X509CaCertificates
+		changed = true
+	}
+
+	return changed
+}
+
+// normaliseMKSV2FakeOIDC stores OIDC like mk-api-v2 daladapter/
+// kubernetes_options.go: ca_certs trimmed, a disabled OIDC wiped.
+func normaliseMKSV2FakeOIDC(oidc mksclient.OIDC) mksclient.OIDC {
+	if !oidc.Enabled {
+		return mksclient.OIDC{}
+	}
+	oidc.CaCerts = strings.TrimSpace(oidc.CaCerts)
+
+	return oidc
+}
+
+// activateCluster is the effect of a finished cluster task.
+func (f *mksV2Fake) activateCluster(id string) func() {
+	return func() {
+		c, ok := f.clusters[id]
+		if ok {
+			c.Status = "ACTIVE"
+			f.clusters[id] = c
+		}
+	}
 }
 
 // deleteCluster removes the cluster when DELETE_CLUSTER is DONE.
@@ -385,7 +454,7 @@ func (f *mksV2Fake) getTask(w http.ResponseWriter, r *http.Request) {
 	t := f.tasks[i]
 	running := t.task.Status == mksclient.INQUEUE || t.task.Status == mksclient.INPROGRESS
 	switch {
-	case !running || t.stuck:
+	case !running || t.stuck || f.stuckTaskTypes[t.task.Type]:
 	case f.failedTaskTypes[t.task.Type]:
 		t.task.Status = mksclient.ERROR
 		t.task.ErrorDetails = &mksclient.TaskErrorDetails{
@@ -426,6 +495,15 @@ func (f *mksV2Fake) seedTask(clusterID, nodegroupID, taskType string, stuck bool
 	if nodegroupID != "" {
 		t.task.NodegroupId = &nodegroupID
 	}
+}
+
+// stickTasks keeps the running tasks of taskType running, or lets them finish
+// again when stuck is false.
+func (f *mksV2Fake) stickTasks(taskType string, stuck bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.stuckTaskTypes[taskType] = stuck
 }
 
 // failTasks makes the tasks of taskType started from now on end in ERROR, or
@@ -536,12 +614,34 @@ func (f *mksV2Fake) seedAdmissionControllers(admissionControllers ...mksclient.A
 	f.admissionControllers = admissionControllers
 }
 
-// fail makes the route answer with status until the test ends.
+// fail makes the route answer with status until the test ends, or answer
+// normally again when status is 0.
 func (f *mksV2Fake) fail(pattern string, status int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if status == 0 {
+		delete(f.failures, pattern)
+
+		return
+	}
 	f.failures[pattern] = status
+}
+
+// lastQuery returns the query string of the last request to the route.
+func (f *mksV2Fake) lastQuery(route string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.queries[route]
+}
+
+// storedX509 returns the X509 CA certificates PATCH stored for the cluster.
+func (f *mksV2Fake) storedX509(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.x509CACertificates[id]
 }
 
 // checkClients fails the test unless every client was built for projectID and

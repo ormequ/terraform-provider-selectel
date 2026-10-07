@@ -45,15 +45,24 @@ func newMKSV2Client(_ context.Context, config *Config, projectID, pool string) (
 		return nil, fmt.Errorf("can't get endpoint to init mks client: %w", err)
 	}
 
-	endpointURL, err := url.Parse(endpoint.URL)
+	baseURL, err := mksV2BaseURL(endpoint.URL)
 	if err != nil {
-		return nil, fmt.Errorf("can't parse mks endpoint %q: %w", endpoint.URL, err)
+		return nil, err
 	}
 
-	// The catalog endpoint ends with /v1, while the v2 client paths start with /v2/.
-	baseURL := endpointURL.Scheme + "://" + endpointURL.Host
-
 	return newMKSV2ServiceClient(selvpcClient.GetXAuthToken(), baseURL, config.UserAgent)
+}
+
+// mksV2BaseURL turns the catalog endpoint of mk-api into the mk-api-v2 base
+// URL: the endpoint ends with /v1, while the v2 client paths start with /v2/,
+// so only the scheme and the host are kept.
+func mksV2BaseURL(endpoint string) (string, error) {
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("can't parse mks endpoint %q: %w", endpoint, err)
+	}
+
+	return endpointURL.Scheme + "://" + endpointURL.Host, nil
 }
 
 // newMKSV2ServiceClient is the part of newMKSV2Client that needs no Keystone.

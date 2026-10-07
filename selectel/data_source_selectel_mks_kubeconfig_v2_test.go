@@ -1,11 +1,13 @@
 package selectel
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
 )
@@ -91,7 +93,7 @@ func TestMKSKubeconfigV2DataSourceAPIErrors(t *testing.T) {
 		{
 			name:      "cluster not found",
 			setup:     func(*mksV2Fake) {},
-			wantError: regexp.MustCompile(`error getting cluster '` + testMKSV2ClusterID + `': object\s+\S+\s+not found`),
+			wantError: regexp.MustCompile(`error getting cluster '` + testMKSV2ClusterID + `': Cluster\s+not\s+found`),
 		},
 		{
 			name: "kubeconfig server error",
@@ -155,4 +157,31 @@ data "selectel_mks_kubeconfig_v2" "kubeconfig_tf_test_1" {
   %s
 }
 `, testMKSV2ProviderConfig(providerProjectID), testMKSV2ClusterID, testMKSV2Pool, testMKSV2ProjectIDArgument(projectID))
+}
+
+func TestMKSKubeconfigV2DataSourceSensitive(t *testing.T) {
+	setTestProviderEnv(t)
+
+	server, err := testAccProtoV6ProviderFactories["selectel"]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := server.GetProviderSchema(context.Background(), &tfprotov6.GetProviderSchemaRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, ok := resp.DataSourceSchemas["selectel_mks_kubeconfig_v2"]
+	if !ok {
+		t.Fatal("no selectel_mks_kubeconfig_v2 schema")
+	}
+
+	sensitive := map[string]bool{}
+	for _, attribute := range schema.Block.Attributes {
+		sensitive[attribute.Name] = attribute.Sensitive
+	}
+	for _, name := range []string{"raw_config", "server", "cluster_ca_cert", "client_cert", "client_key"} {
+		if !sensitive[name] {
+			t.Errorf("attribute %s is not Sensitive", name)
+		}
+	}
 }

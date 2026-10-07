@@ -171,7 +171,8 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		status, ok := f.failures[pattern]
 		if ok {
-			writeMKSV2Error(w, status, r.PathValue("cluster_id"))
+			objectType, id := mksV2FakeObject(r)
+			writeMKSV2Error(w, status, objectType, id)
 
 			return
 		}
@@ -184,7 +185,7 @@ func (f *mksV2Fake) getCluster(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	c, ok := f.clusters[id]
 	if !ok {
-		writeMKSV2Error(w, http.StatusNotFound, id)
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
 
 		return
 	}
@@ -196,7 +197,7 @@ func (f *mksV2Fake) getKubeconfig(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	kubeconfig, ok := f.kubeconfigs[id]
 	if !ok {
-		writeMKSV2Error(w, http.StatusNotFound, id)
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
 
 		return
 	}
@@ -211,7 +212,7 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 	var body mksclient.ClusterCreateBody
 	err := json.NewDecoder(r.Body).Decode(&body)
 	if err != nil || body.Cluster == nil {
-		writeMKSV2Error(w, http.StatusBadRequest, "")
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, "")
 
 		return
 	}
@@ -270,14 +271,14 @@ func (f *mksV2Fake) patchCluster(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	c, ok := f.clusters[id]
 	if !ok {
-		writeMKSV2Error(w, http.StatusNotFound, id)
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
 
 		return
 	}
 	var body mksclient.ClusterUpdateBody
 	err := json.NewDecoder(r.Body).Decode(&body)
 	if err != nil || body.Cluster == nil {
-		writeMKSV2Error(w, http.StatusBadRequest, id)
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, id)
 
 		return
 	}
@@ -366,7 +367,7 @@ func (f *mksV2Fake) deleteCluster(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	_, ok := f.clusters[id]
 	if !ok {
-		writeMKSV2Error(w, http.StatusNotFound, id)
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
 
 		return
 	}
@@ -382,7 +383,7 @@ func (f *mksV2Fake) upgradeCluster(minor bool) http.HandlerFunc {
 		id := r.PathValue("cluster_id")
 		c, ok := f.clusters[id]
 		if !ok {
-			writeMKSV2Error(w, http.StatusNotFound, id)
+			writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
 
 			return
 		}
@@ -393,13 +394,13 @@ func (f *mksV2Fake) upgradeCluster(minor bool) http.HandlerFunc {
 		}
 		targetMinor, err := target(c.KubeVersion)
 		if err != nil {
-			writeMKSV2Error(w, http.StatusBadRequest, id)
+			writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, id)
 
 			return
 		}
 		latest, err := latestKubePatchVersions(mksKubeVersionsV2ToV1Views(f.kubeVersions))
 		if err != nil || latest[targetMinor] == "" {
-			writeMKSV2Error(w, http.StatusBadRequest, id)
+			writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, id)
 
 			return
 		}
@@ -417,7 +418,7 @@ func (f *mksV2Fake) upgradeCluster(minor bool) http.HandlerFunc {
 func (f *mksV2Fake) listTasks(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	if _, ok := f.clusters[id]; !ok {
-		writeMKSV2Error(w, http.StatusNotFound, id)
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
 
 		return
 	}
@@ -445,8 +446,13 @@ func (f *mksV2Fake) getTask(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("task_id")
 	i := slices.IndexFunc(f.tasks, func(t *mksV2FakeTask) bool { return t.task.Id == taskID && t.task.ClusterId == id })
 	_, clusterExists := f.clusters[id]
-	if i < 0 || !clusterExists {
-		writeMKSV2Error(w, http.StatusNotFound, taskID)
+	if !clusterExists {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
+
+		return
+	}
+	if i < 0 {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectTask, taskID)
 
 		return
 	}
@@ -676,11 +682,33 @@ func writeMKSV2JSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-func writeMKSV2Error(w http.ResponseWriter, status int, id string) {
+// The object types of mk-api-v2 not-found errors, see its
+// models/objects/objects.go.
+const (
+	mksV2ObjectCluster   = "Cluster"
+	mksV2ObjectNodegroup = "Nodegroup"
+	mksV2ObjectTask      = "Task"
+)
+
+// mksV2FakeObject names the most specific object of the request path.
+func mksV2FakeObject(r *http.Request) (string, string) {
+	if id := r.PathValue("task_id"); id != "" {
+		return mksV2ObjectTask, id
+	}
+	if id := r.PathValue("nodegroup_id"); id != "" {
+		return mksV2ObjectNodegroup, id
+	}
+
+	return mksV2ObjectCluster, r.PathValue("cluster_id")
+}
+
+// writeMKSV2Error answers like mk-api-v2 handlers/common/errors.go: a 404
+// names the object type in the message and carries the ID in error.id.
+func writeMKSV2Error(w http.ResponseWriter, status int, objectType, id string) {
 	if status == http.StatusNotFound {
 		var body mksclient.GenericNotFoundError
 		body.Error.Id = id
-		body.Error.Message = fmt.Sprintf("object %s not found", id)
+		body.Error.Message = objectType + " not found"
 		writeMKSV2JSON(w, status, body)
 
 		return
@@ -711,7 +739,7 @@ func useMKSV2TestConfig(t *testing.T) {
 func (f *mksV2Fake) listNodegroups(w http.ResponseWriter, r *http.Request) {
 	clusterID := r.PathValue("cluster_id")
 	if _, ok := f.clusters[clusterID]; !ok {
-		writeMKSV2Error(w, http.StatusNotFound, clusterID)
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, clusterID)
 
 		return
 	}
@@ -740,14 +768,14 @@ func (f *mksV2Fake) listNodegroups(w http.ResponseWriter, r *http.Request) {
 func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 	clusterID := r.PathValue("cluster_id")
 	if _, ok := f.clusters[clusterID]; !ok {
-		writeMKSV2Error(w, http.StatusNotFound, clusterID)
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, clusterID)
 
 		return
 	}
 	var body mksclient.NodegroupsCreateBody
 	err := json.NewDecoder(r.Body).Decode(&body)
 	if err != nil || len(body.Nodegroups) == 0 {
-		writeMKSV2Error(w, http.StatusBadRequest, clusterID)
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, clusterID)
 
 		return
 	}
@@ -794,8 +822,13 @@ func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 func (f *mksV2Fake) nodegroup(w http.ResponseWriter, r *http.Request) (mksclient.NodegroupDetailed, bool) {
 	clusterID, id := r.PathValue("cluster_id"), r.PathValue("nodegroup_id")
 	ng, ok := f.nodegroups[id]
-	if _, clusterExists := f.clusters[clusterID]; !ok || !clusterExists || ng.ClusterId != clusterID {
-		writeMKSV2Error(w, http.StatusNotFound, id)
+	if _, clusterExists := f.clusters[clusterID]; !clusterExists {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, clusterID)
+
+		return ng, false
+	}
+	if !ok || ng.ClusterId != clusterID {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectNodegroup, id)
 
 		return ng, false
 	}
@@ -820,7 +853,7 @@ func (f *mksV2Fake) patchNodegroup(w http.ResponseWriter, r *http.Request) {
 	var body mksclient.NodegroupUpdateBody
 	err := json.NewDecoder(r.Body).Decode(&body)
 	if err != nil {
-		writeMKSV2Error(w, http.StatusBadRequest, ng.Id)
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
 
 		return
 	}
@@ -862,7 +895,7 @@ func (f *mksV2Fake) resizeNodegroup(w http.ResponseWriter, r *http.Request) {
 	var body mksclient.NodegroupResizeBody
 	err := json.NewDecoder(r.Body).Decode(&body)
 	if err != nil {
-		writeMKSV2Error(w, http.StatusBadRequest, ng.Id)
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
 
 		return
 	}

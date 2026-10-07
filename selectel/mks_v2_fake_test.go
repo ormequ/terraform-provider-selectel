@@ -37,7 +37,16 @@ type mksV2Fake struct {
 	admissionControllers []mksclient.AvailableAdmissionControllers
 	// failures maps a route pattern to the HTTP status it answers with.
 	failures map[string]int
-	tasks    []*mksV2FakeTask
+	// callFailures maps a route pattern and a call number to the HTTP status
+	// that call answers with.
+	callFailures map[string]map[int]int
+	// createNodegroupsStatus is the status create answers with after it has
+	// stored the nodegroups, like mk-api-v2 when the task publish fails.
+	createNodegroupsStatus int
+	// concurrentNodegroups are created along with the next create request, as
+	// if someone else created them in the meantime.
+	concurrentNodegroups []mksclient.NodegroupDetailed
+	tasks                []*mksV2FakeTask
 	// failedTaskTypes makes new tasks of a type end in ERROR.
 	failedTaskTypes map[string]bool
 	// stuckTaskTypes keeps the running tasks of a type running.
@@ -100,6 +109,8 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 		nodegroups:  map[string]mksclient.NodegroupDetailed{},
 		kubeconfigs: map[string]string{},
 		failures:    map[string]int{},
+
+		callFailures: map[string]map[int]int{},
 
 		failedTaskTypes:    map[string]bool{},
 		stuckTaskTypes:     map[string]bool{},
@@ -170,6 +181,9 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		status, ok := f.failures[pattern]
+		if !ok {
+			status, ok = f.callFailures[pattern][f.calls[pattern]]
+		}
 		if ok {
 			objectType, id := mksV2FakeObject(r)
 			writeMKSV2Error(w, status, objectType, id)
@@ -634,6 +648,20 @@ func (f *mksV2Fake) fail(pattern string, status int) {
 	f.failures[pattern] = status
 }
 
+// failCalls makes the given calls of the route, counted from 1 over the whole
+// test, answer with status.
+func (f *mksV2Fake) failCalls(pattern string, status int, calls ...int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.callFailures[pattern] == nil {
+		f.callFailures[pattern] = map[int]int{}
+	}
+	for _, call := range calls {
+		f.callFailures[pattern][call] = status
+	}
+}
+
 // lastQuery returns the query string of the last request to the route.
 func (f *mksV2Fake) lastQuery(route string) string {
 	f.mu.Lock()
@@ -751,15 +779,29 @@ func (f *mksV2Fake) listNodegroups(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		items = append(items, mksclient.NodegroupListItem{
-			Id:        ng.Id,
-			ClusterId: ng.ClusterId,
-			Segment:   ng.Segment,
-			Status:    mksclient.NodegroupListItemStatus(ng.Status),
-			Nodes:     ng.Nodes,
+			Id:                       ng.Id,
+			ClusterId:                ng.ClusterId,
+			Segment:                  ng.Segment,
+			Status:                   mksclient.NodegroupListItemStatus(ng.Status),
+			Nodes:                    ng.Nodes,
+			Labels:                   ng.Labels,
+			CloudNodegroupConfig:     ng.CloudNodegroupConfig,
+			DedicatedNodegroupConfig: ng.DedicatedNodegroupConfig,
 		})
 	}
 
 	writeMKSV2JSON(w, http.StatusOK, mksclient.NodegroupList{Nodegroups: items})
+}
+
+// mksV2FakeFlavors are the flavors whose specs the fake applies like mk-api-v2
+// validate/flavor.go: a local disk forces local_volume, a volume spec
+// replaces volume_gb. Other flavor IDs have neither.
+var mksV2FakeFlavors = map[string]struct {
+	localDisk bool
+	volumeGB  int64
+}{
+	"local-1013":  {localDisk: true},
+	"volume-1013": {volumeGB: 50},
 }
 
 // createNodegroups fills what the API defaults and starts a CLUSTER_RESIZE
@@ -781,9 +823,28 @@ func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, opts := range body.Nodegroups {
+		cloud := valueOrZero(opts.CloudNodegroupConfig)
+		if cloud.FlavorId == "" && valueOr(opts.InstallNvidiaDevicePlugin, false) {
+			// validate/flavor.go ErrorInstallNDPWithoutFlavor.
+			writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, "")
+
+			return
+		}
+	}
+	for _, ng := range f.concurrentNodegroups {
+		f.nodegroups[ng.Id] = ng
+	}
+	f.concurrentNodegroups = nil
+
+	for _, opts := range body.Nodegroups {
 		f.nodegroupSeq++
 		id := fmt.Sprintf("ng-%d", f.nodegroupSeq)
 		cloud := valueOrZero(opts.CloudNodegroupConfig)
+		if cloud.FlavorId != "" {
+			flavor := mksV2FakeFlavors[cloud.FlavorId]
+			cloud.LocalVolume = cloud.LocalVolume || flavor.localDisk
+			cloud.VolumeGb = cmp.Or(flavor.volumeGB, cloud.VolumeGb)
+		}
 		f.nodegroups[id] = mksclient.NodegroupDetailed{
 			Id:                        id,
 			ClusterId:                 clusterID,
@@ -815,7 +876,29 @@ func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	if f.createNodegroupsStatus != 0 {
+		writeMKSV2Error(w, f.createNodegroupsStatus, mksV2ObjectCluster, clusterID)
+
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// failCreateNodegroupsAfterStore makes create store the nodegroups and then
+// answer with status, or answer normally again when status is 0.
+func (f *mksV2Fake) failCreateNodegroupsAfterStore(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.createNodegroupsStatus = status
+}
+
+// createConcurrently makes the next create request add ng as well.
+func (f *mksV2Fake) createConcurrently(ng mksclient.NodegroupDetailed) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.concurrentNodegroups = append(f.concurrentNodegroups, ng)
 }
 
 // nodegroup returns the nodegroup of the request path, or answers 404.
@@ -895,6 +978,13 @@ func (f *mksV2Fake) resizeNodegroup(w http.ResponseWriter, r *http.Request) {
 	var body mksclient.NodegroupResizeBody
 	err := json.NewDecoder(r.Body).Decode(&body)
 	if err != nil {
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
+
+		return
+	}
+
+	if int(body.Nodegroup.Desired) == len(ng.Nodes) {
+		// handlers/nodegroups/resize.go ErrorNodegroupResizeSameCount.
 		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
 
 		return

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
@@ -30,7 +31,6 @@ func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
 
 	config := testMKSNodegroupV2Config(`
   nodes_count = 2
-  cidr  = "10.20.0.0/24"
   cloud_nodegroup_config = {
     cpus            = 2
     ram_mb          = 4096
@@ -73,7 +73,7 @@ func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "nodes.1.hostname", "ng-1-node-2"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "status", "ACTIVE"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "nodegroup_type", "STANDARD"),
-					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cidr", "10.20.0.0/24"),
+					resource.TestCheckNoResourceAttr(testMKSNodegroupV2Name, "cidr"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "labels.env", "test"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "taints.0.effect", "NoSchedule"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "enable_autoscale", "false"),
@@ -86,8 +86,8 @@ func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
 					func(_ *terraform.State) error {
 						body := testMKSNodegroupV2CreateBody(t, fake)
 						err := testMKSClusterV2BodyFields(body, map[string]any{
-							"count": float64(2), "segment": "ru-7a", "cidr": "10.20.0.0/24", "install_nvidia_device_plugin": false,
-						}, "enable_autoscale", "dedicated_nodegroup_config")
+							"count": float64(2), "segment": "ru-7a", "install_nvidia_device_plugin": false,
+						}, "enable_autoscale", "dedicated_nodegroup_config", "cidr")
 						if err != nil {
 							return err
 						}
@@ -255,6 +255,30 @@ func TestMKSNodegroupV2ResourceConfigValidation(t *testing.T) {
 			name:       "local volume flavor with volume_gb, issue 273",
 			attributes: "nodes_count = 1\ncloud_nodegroup_config = {\nflavor_id = \"1013\"\nlocal_volume = true\nvolume_gb = 50\n}",
 			wantError:  `volume_gb cannot be used with flavor_id and local_volume = true`,
+		},
+		{
+			name:       "cidr on a cloud node group",
+			attributes: "nodes_count = 1\ncidr = \"10.20.0.0/24\"\ncloud_nodegroup_config = {\nflavor_id = \"1013\"\n}",
+			wantError:  `cidr applies to dedicated node groups only`,
+		},
+		{
+			name:       "NVIDIA device plugin with cpus",
+			attributes: "nodes_count = 1\ninstall_nvidia_device_plugin = true\ncloud_nodegroup_config = {\ncpus = 2\nram_mb = 4096\nvolume_gb = 20\nvolume_type = \"fast.ru-7a\"\n}",
+			wantError:  `install_nvidia_device_plugin = true needs a GPU flavor`,
+		},
+		{
+			name:       "autoscaling without autoscale_min_nodes",
+			attributes: "enable_autoscale = true\nautoscale_max_nodes = 3\ncloud_nodegroup_config = {\nflavor_id = \"1013\"\n}",
+			wantError:  `enable_autoscale = true requires both autoscale_min_nodes and autoscale_max_nodes`,
+		},
+		{
+			name:       "autoscaling without autoscale_max_nodes",
+			attributes: "nodes_count = 1\nenable_autoscale = true\nautoscale_min_nodes = 1\ncloud_nodegroup_config = {\nflavor_id = \"1013\"\n}",
+			wantError:  `enable_autoscale = true requires both autoscale_min_nodes and autoscale_max_nodes`,
+		},
+		{
+			name:       "NVIDIA device plugin with a flavor",
+			attributes: "nodes_count = 1\ninstall_nvidia_device_plugin = true\ncloud_nodegroup_config = {\nflavor_id = \"1013\"\n}",
 		},
 		{
 			name:       "no count without autoscaling",
@@ -618,7 +642,6 @@ func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
 	config := func(affinityPolicy string) string {
 		return testMKSClusterV2ProviderConfig("provider-project", testMKSV2Pool) + testMKSNodegroupV2Resource(`
   nodes_count = 1
-  cidr        = "10.20.0.0/24"
   cloud_nodegroup_config = {
     cpus         = 2
     ram_mb       = 4096
@@ -657,7 +680,7 @@ func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
 				Config: config(""),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.cpus", "2"),
-					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cidr", "10.20.0.0/24"),
+					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.ram_mb", "4096"),
 					calls(0, 0),
 				),
 			},
@@ -671,26 +694,35 @@ func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
 	})
 }
 
-func TestMKSNodegroupV2ResourceAddedCIDRRecreates(t *testing.T) {
+func TestMKSNodegroupV2ResourceAddedAffinityPolicyRecreates(t *testing.T) {
 	useMKSV2TestConfig(t)
 	fake := newMKSV2Fake(t)
 	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
 
+	config := func(affinityPolicy string) string {
+		return testMKSNodegroupV2Config(`
+  nodes_count = 1
+  cloud_nodegroup_config = {
+    flavor_id = "1013"
+` + affinityPolicy + `
+  }
+`)
+	}
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-2"),
 		Steps: []resource.TestStep{
 			{
-				Config: testMKSNodegroupV2Config(testMKSNodegroupV2Flavor),
-				Check:  resource.TestCheckNoResourceAttr(testMKSNodegroupV2Name, "cidr"),
+				Config: config(""),
+				Check:  resource.TestCheckNoResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.affinity_policy"),
 			},
 			{
 				// Without an import, a value missing from the state is a
 				// value the nodegroup was created without.
-				Config: testMKSNodegroupV2Config(testMKSNodegroupV2Flavor + `  cidr = "10.20.0.0/24"` + "\n"),
+				Config: config(`    affinity_policy = "soft-anti-affinity"`),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "id", testMKSV2ClusterID+"/ng-2"),
-					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cidr", "10.20.0.0/24"),
+					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.affinity_policy", "soft-anti-affinity"),
 				),
 			},
 		},
@@ -873,5 +905,385 @@ func testMKSNodegroupV2NoCreate(t *testing.T, fake *mksV2Fake) {
 	}
 	if slices.Contains(fake.clientPools(), "") {
 		t.Errorf("a client was built without a pool")
+	}
+}
+
+func TestMKSNodegroupV2ResourceListAfterCreateFails(t *testing.T) {
+	tests := []struct {
+		name string
+		// failures is the number of failed lists after the create request.
+		failures  int
+		wantError string
+	}{
+		{name: "once, the retry finds it", failures: 1},
+		{
+			name:     "twice, the error names what is known",
+			failures: 2,
+			wantError: `the node group was created in cluster ` + testMKSV2ClusterID + `, but listing the node groups failed, ` +
+				`so its ID is unknown: it is the node group not among ng-existing; import it`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useMKSV2TestConfig(t)
+			fake := newMKSV2Fake(t)
+			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+			fake.seedNodegroup(mksclient.NodegroupDetailed{Id: "ng-existing", ClusterId: testMKSV2ClusterID, Segment: "ru-7b"})
+
+			step := resource.TestStep{
+				PreConfig: func() {
+					// The list before the create request comes next, then
+					// the ones after it.
+					next := fake.callCount(mksV2RouteNodegroups) + 2
+					calls := []int{next}
+					if tt.failures == 2 {
+						calls = append(calls, next+1)
+					}
+					fake.failCalls(mksV2RouteNodegroups, http.StatusInternalServerError, calls...)
+				},
+				Config: testMKSNodegroupV2Config(testMKSNodegroupV2Flavor),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "id", testMKSNodegroupV2ID),
+					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "status", "ACTIVE"),
+				),
+			}
+			checkDestroy := testMKSNodegroupV2Destroyed(fake, "ng-1")
+			if tt.wantError != "" {
+				step.Check = nil
+				step.ExpectError = testMKSClusterV2Error(tt.wantError)
+				// The node group is not in state; the error tells the user
+				// to import or delete it.
+				checkDestroy = nil
+			}
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				CheckDestroy:             checkDestroy,
+				Steps:                    []resource.TestStep{step},
+			})
+
+			calls := fake.callCount(mksV2RouteCreateNodegroups)
+			if calls != 1 {
+				t.Errorf("sent %d create requests, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestMKSNodegroupV2ResourceCreatedElsewhere(t *testing.T) {
+	tests := []struct {
+		name  string
+		other mksclient.NodegroupDetailed
+		// wantError is empty when the create options tell the node groups
+		// apart.
+		wantError string
+	}{
+		{
+			name:  "other segment",
+			other: mksclient.NodegroupDetailed{Id: "ng-other", ClusterId: testMKSV2ClusterID, Segment: "ru-7b"},
+		},
+		{
+			name: "other flavor",
+			other: mksclient.NodegroupDetailed{
+				Id: "ng-other", ClusterId: testMKSV2ClusterID, Segment: "ru-7a",
+				CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{FlavorId: "2026"},
+			},
+		},
+		{
+			name: "other labels",
+			other: mksclient.NodegroupDetailed{
+				Id: "ng-other", ClusterId: testMKSV2ClusterID, Segment: "ru-7a", Labels: map[string]string{"env": "prod"},
+				CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{FlavorId: "1013"},
+			},
+		},
+		{
+			name: "same options",
+			other: mksclient.NodegroupDetailed{
+				Id: "ng-other", ClusterId: testMKSV2ClusterID, Segment: "ru-7a", Labels: map[string]string{"env": "test"},
+				CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{FlavorId: "1013"},
+			},
+			wantError: `can't find the created node group in cluster ` + testMKSV2ClusterID +
+				`: 2 new node groups listed match it, want 1 \(candidates: ng-1, ng-other\)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useMKSV2TestConfig(t)
+			fake := newMKSV2Fake(t)
+			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+			fake.createConcurrently(tt.other)
+
+			step := resource.TestStep{
+				Config: testMKSNodegroupV2Config(testMKSNodegroupV2Flavor + `  labels = { env = "test" }` + "\n"),
+				Check:  resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "id", testMKSNodegroupV2ID),
+			}
+			checkDestroy := testMKSNodegroupV2Destroyed(fake, "ng-1")
+			if tt.wantError != "" {
+				step.Check = nil
+				step.ExpectError = testMKSClusterV2Error(tt.wantError)
+				checkDestroy = nil
+			}
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				CheckDestroy:             checkDestroy,
+				Steps:                    []resource.TestStep{step},
+			})
+
+			if !fake.hasNodegroup("ng-other") {
+				t.Errorf("the provider deleted the node group created elsewhere")
+			}
+		})
+	}
+}
+
+func TestMKSNodegroupV2ResourceCreateErrorAfterStore(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+	// Like mk-api-v2 when the task publish fails after the commit.
+	fake.failCreateNodegroupsAfterStore(http.StatusInternalServerError)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testMKSNodegroupV2Config(testMKSNodegroupV2Flavor),
+				ExpectError: testMKSClusterV2Error(`fake error 500; cluster ` + testMKSV2ClusterID +
+					` now has new node groups ng-1 that may be this one: import it as <cluster_id>/<nodegroup_id> or delete it`),
+			},
+		},
+	})
+}
+
+func TestMKSNodegroupV2ResourceFlavorReplacesVolume(t *testing.T) {
+	tests := []struct {
+		name      string
+		cloud     string
+		wantError string
+		// wantLocal is the local_volume the state gets when nothing fails.
+		wantLocal string
+	}{
+		{
+			name:      "local disk flavor with local_volume = false",
+			cloud:     "flavor_id = \"local-1013\"\nlocal_volume = false",
+			wantError: `Flavor local-1013 gives local_volume = true, while the configuration sets false. Omit local_volume and volume_gb`,
+		},
+		{
+			name:      "volume flavor with another volume_gb",
+			cloud:     "flavor_id = \"volume-1013\"\nvolume_gb = 20",
+			wantError: `Flavor volume-1013 gives volume_gb = 50, while the configuration sets 20. Omit local_volume and volume_gb`,
+		},
+		{
+			name:      "local disk flavor with both omitted",
+			cloud:     "flavor_id = \"local-1013\"",
+			wantLocal: "true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useMKSV2TestConfig(t)
+			fake := newMKSV2Fake(t)
+			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+
+			config := testMKSNodegroupV2Config("  nodes_count = 1\n  cloud_nodegroup_config = {\n" + tt.cloud + "\n  }\n")
+			step := resource.TestStep{
+				Config: config,
+				Check:  resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.local_volume", tt.wantLocal),
+			}
+			if tt.wantError != "" {
+				step.Check = nil
+				step.ExpectError = testMKSClusterV2Error(tt.wantError)
+			}
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				// The failed node group is saved tainted and destroyed.
+				CheckDestroy: testMKSNodegroupV2Destroyed(fake, "ng-1"),
+				Steps:        []resource.TestStep{step},
+			})
+		})
+	}
+}
+
+func TestMKSNodegroupV2ResourceImportDedicated(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeL3VPN)
+	fake.seedNodegroup(mksclient.NodegroupDetailed{
+		Id: "ng-1", ClusterId: testMKSV2ClusterID, Segment: "ru-7a", Status: "ACTIVE",
+		Nodes:                    mksV2FakeNodes("ng-1", 1),
+		DedicatedNodegroupConfig: &mksclient.DedicatedNodegroupConfig{},
+	})
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:        testMKSClusterV2ProviderConfig("provider-project", testMKSV2Pool) + testMKSNodegroupV2Resource(testMKSNodegroupV2Flavor),
+				ResourceName:  testMKSNodegroupV2Name,
+				ImportState:   true,
+				ImportStateId: testMKSNodegroupV2ID,
+				ExpectError: testMKSClusterV2Error(`node group ` + testMKSNodegroupV2ID +
+					` is dedicated: dedicated node groups are not supported by this resource yet`),
+			},
+		},
+	})
+
+	if !fake.hasNodegroup("ng-1") {
+		t.Errorf("the dedicated node group was deleted")
+	}
+}
+
+func TestMKSNodegroupV2ResourceImportMarkExpires(t *testing.T) {
+	useMKSV2TestConfig(t)
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+	fake.seedNodegroup(mksclient.NodegroupDetailed{
+		Id: "ng-1", ClusterId: testMKSV2ClusterID, Segment: "ru-7a", Status: "ACTIVE",
+		Nodes:                mksV2FakeNodes("ng-1", 1),
+		CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{FlavorId: "1013", VolumeGb: 20, VolumeType: "fast.ru-7a"},
+	})
+
+	config := func(affinityPolicy string) string {
+		return testMKSClusterV2ProviderConfig("provider-project", testMKSV2Pool) + testMKSNodegroupV2Resource(`
+  nodes_count = 1
+  cloud_nodegroup_config = {
+    flavor_id = "1013"
+`+affinityPolicy+`
+  }
+`)
+	}
+	calls := func(creates, deletes int) resource.TestCheckFunc {
+		return testMKSClusterV2Calls(fake, map[string]int{
+			mksV2RouteCreateNodegroups: creates, mksV2RouteDeleteNodegroup: deletes, mksV2RoutePatchNodegroup: 0,
+		})
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
+		Steps: []resource.TestStep{
+			{
+				Config:             config(""),
+				ResourceName:       testMKSNodegroupV2Name,
+				ImportState:        true,
+				ImportStateId:      testMKSNodegroupV2ID,
+				ImportStatePersist: true,
+			},
+			{
+				// Nothing to update, so no Update clears the mark; the
+				// refreshes of this apply and the next one do.
+				Config: config(""),
+				Check:  calls(0, 0),
+			},
+			{
+				Config: config(""),
+				Check:  calls(0, 0),
+			},
+			{
+				// The fake numbers the new node group ng-1 again, so the
+				// calls tell the replacement apart.
+				Config: config(`    affinity_policy = "soft-affinity"`),
+				Check:  calls(1, 1),
+			},
+		},
+	})
+}
+
+func TestMKSNodegroupV2ResourceUpdateTaskError(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType string
+		// before and after are the attributes of the two configurations.
+		before, after string
+		check         resource.TestCheckFunc
+	}{
+		{
+			name:     "labels",
+			taskType: "UPDATE_NODEGROUP_LABELS",
+			before:   `labels = { env = "test" }`,
+			after:    `labels = { env = "prod" }`,
+			check:    resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "labels.env", "prod"),
+		},
+		{
+			name:     "taints",
+			taskType: "UPDATE_NODEGROUP_TAINTS",
+			before:   `taints = []`,
+			after:    `taints = [{ key = "k1", value = "v1", effect = "NoSchedule" }]`,
+			check:    resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "taints.0.key", "k1"),
+		},
+		{
+			name:     "resize",
+			taskType: "NODE_GROUP_RESIZE",
+			before:   ``,
+			after:    `nodes_count = 2`,
+			check:    resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "nodes.#", "2"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useMKSV2TestConfig(t)
+			fake := newMKSV2Fake(t)
+			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+
+			config := func(attributes string) string {
+				count := "  nodes_count = 1\n"
+				if tt.name == "resize" && attributes != "" {
+					count = ""
+				}
+
+				return testMKSNodegroupV2Config(count + "  cloud_nodegroup_config = {\n    flavor_id = \"1013\"\n  }\n  " + attributes + "\n")
+			}
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
+				Steps: []resource.TestStep{
+					{
+						Config: config(tt.before),
+					},
+					{
+						PreConfig: func() { fake.failTasks(tt.taskType, true) },
+						Config:    config(tt.after),
+						ExpectError: testMKSClusterV2Error(`task ` + tt.taskType + ` task-\d+ of cluster ` +
+							testMKSV2ClusterID + ` ended in ERROR`),
+					},
+					{
+						// The state kept the prior values, so the next plan
+						// repeats the change.
+						Config:             config(tt.after),
+						PlanOnly:           true,
+						ExpectNonEmptyPlan: true,
+					},
+					{
+						PreConfig: func() { fake.failTasks(tt.taskType, false) },
+						Config:    config(tt.after),
+						Check:     tt.check,
+					},
+				},
+			})
+		})
+	}
+}
+
+func TestMKSNodegroupV2FakeRejectsSameCountResize(t *testing.T) {
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+	fake.seedNodegroup(mksclient.NodegroupDetailed{Id: "ng-1", ClusterId: testMKSV2ClusterID, Nodes: mksV2FakeNodes("ng-1", 2)})
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		fake.server.URL+"/v2/clusters/"+testMKSV2ClusterID+"/nodegroups/ng-1/resize",
+		strings.NewReader(`{"nodegroup":{"desired":2}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := fake.server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("resize to the current count answered %d, want 400 like mk-api-v2", resp.StatusCode)
 	}
 }

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
@@ -183,9 +186,10 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 					"or in the configuration are ignored.",
 			},
 			"cidr": schema.StringAttribute{
-				Optional:      true,
-				Computed:      true,
-				Description:   "CIDR of the node group network.",
+				Optional: true,
+				Computed: true,
+				Description: "CIDR of the node group network. Applies to dedicated node groups only, " +
+					"which this resource does not support yet, so setting it fails the plan.",
 				PlanModifiers: replaceStringUnlessImported,
 			},
 			"labels": schema.MapAttribute{
@@ -193,14 +197,14 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 				Computed:    true,
 				ElementType: types.StringType,
 				Description: "Kubernetes labels applied to each node in the node group. " +
-					"Labels removed from the configuration stay; set an empty map to remove all of them.",
+					"Removing the `labels` argument keeps the current labels; set an empty map to remove them.",
 				PlanModifiers: []planmodifier.Map{mapplanmodifier.UseStateForUnknown()},
 			},
 			"taints": schema.ListNestedAttribute{
 				Optional: true,
 				Computed: true,
 				Description: "Kubernetes taints applied to each node in the node group. " +
-					"Taints removed from the configuration stay; set an empty list to remove all of them.",
+					"Removing the `taints` argument keeps the current taints; set an empty list to remove them.",
 				PlanModifiers: []planmodifier.List{listplanmodifier.UseStateForUnknown()},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -284,8 +288,8 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 					"volume_gb": schema.Int64Attribute{
 						Optional: true,
 						Computed: true,
-						Description: "Volume size of each node in GB. Cannot be set together with `flavor_id` " +
-							"when `local_volume` is `true`: such a flavor defines the volume itself.",
+						Description: "Volume size of each node in GB. Omit it with `flavor_id`: the API takes it from a flavor " +
+							"that defines a volume, and a different configured value fails the apply.",
 						PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()},
 					},
 					"volume_type": schema.StringAttribute{
@@ -296,9 +300,10 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 						PlanModifiers: replaceString,
 					},
 					"local_volume": schema.BoolAttribute{
-						Optional:      true,
-						Computed:      true,
-						Description:   "Makes the nodes use a local volume instead of a network one.",
+						Optional: true,
+						Computed: true,
+						Description: "Makes the nodes use a local volume instead of a network one. Omit it with `flavor_id`: " +
+							"the API sets it for a flavor with a local disk, and a different configured value fails the apply.",
 						PlanModifiers: replaceBool,
 					},
 					"affinity_policy": schema.StringAttribute{
@@ -365,9 +370,9 @@ func (m *mksNodegroupV2Model) setIdentity(ctx context.Context, identity *tfsdk.R
 	})
 }
 
-// ValidateConfig rejects the cloud_nodegroup_config combinations the API
-// rejects and that depend on values, not only on presence (issues #273 and
-// #300), see mk-api-v2 validate/nodegroup.go and validate/flavor.go.
+// ValidateConfig rejects the combinations the API rejects and that depend on
+// values, not only on presence (issues #273 and #300), see mk-api-v2
+// validate/nodegroup.go and validate/flavor.go.
 func (r *mksNodegroupV2Resource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config mksNodegroupV2Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
@@ -378,6 +383,16 @@ func (r *mksNodegroupV2Resource) ValidateConfig(ctx context.Context, req resourc
 	if config.Count.IsNull() && !config.EnableAutoscale.IsUnknown() && !config.EnableAutoscale.ValueBool() {
 		resp.Diagnostics.AddAttributeError(path.Root("nodes_count"), "Missing node count",
 			"Set nodes_count, or enable autoscaling with enable_autoscale = true.")
+	}
+	if config.EnableAutoscale.ValueBool() && (config.AutoscaleMinNodes.IsNull() || config.AutoscaleMaxNodes.IsNull()) {
+		resp.Diagnostics.AddAttributeError(path.Root("enable_autoscale"), "Missing autoscaling limits",
+			"enable_autoscale = true requires both autoscale_min_nodes and autoscale_max_nodes.")
+	}
+	// The API stores a cidr as the network of a dedicated node group and
+	// validates it only for those, see mk-api-v2 handlers/nodegroups/create.go.
+	if !config.CIDR.IsNull() && !config.CIDR.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(path.Root("cidr"), "Unsupported cidr",
+			"cidr applies to dedicated node groups only; remove it from a cloud node group.")
 	}
 
 	if config.CloudNodegroupConfig.IsNull() || config.CloudNodegroupConfig.IsUnknown() {
@@ -393,6 +408,10 @@ func (r *mksNodegroupV2Resource) ValidateConfig(ctx context.Context, req resourc
 	if cloud.FlavorID.IsNull() && cloud.CPUs.IsNull() {
 		resp.Diagnostics.AddAttributeError(configPath, "Missing node flavor",
 			"Set either flavor_id, or cpus and ram_mb in cloud_nodegroup_config.")
+	}
+	if config.InstallNvidiaDevicePlugin.ValueBool() && !cloud.CPUs.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("install_nvidia_device_plugin"), "Conflicting node flavor",
+			"install_nvidia_device_plugin = true needs a GPU flavor: set flavor_id instead of cpus and ram_mb.")
 	}
 	if !cloud.LocalVolume.ValueBool() {
 		return
@@ -526,6 +545,7 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 	if waitErr != nil {
 		resp.Diagnostics.AddError("Error waiting for the node group to become ready", waitErr.Error())
 	}
+	resp.Diagnostics.Append(mksNodegroupV2CheckFlavorVolume(ctx, plan.CloudNodegroupConfig, got.CloudNodegroupConfig)...)
 }
 
 func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -567,7 +587,19 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 
 		return
 	}
+	if got.DedicatedNodegroupConfig != nil {
+		// Import reads here too: the node group would otherwise get a cloud
+		// configuration planned and be replaced.
+		resp.Diagnostics.AddError("Unsupported node group",
+			fmt.Sprintf("node group %s is dedicated: dedicated node groups are not supported by this resource yet", state.ID.ValueString()))
 
+		return
+	}
+
+	// A null segment means this is the read of the import itself.
+	if !state.Segment.IsNull() {
+		resp.Diagnostics.Append(mksNodegroupV2AgeImportMark(ctx, req.Private, resp.Private)...)
+	}
 	prior := state
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, prior, false)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
@@ -624,10 +656,12 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 
 		return
 	}
+	planned := plan.CloudNodegroupConfig
 	resp.Diagnostics.Append(plan.fromAPI(ctx, got, plan, true)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 	resp.Diagnostics.Append(plan.setIdentity(ctx, resp.Identity)...)
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, nil)...)
+	resp.Diagnostics.Append(mksNodegroupV2CheckFlavorVolume(ctx, planned, got.CloudNodegroupConfig)...)
 }
 
 func (r *mksNodegroupV2Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -685,7 +719,7 @@ func (r *mksNodegroupV2Resource) ImportState(ctx context.Context, req resource.I
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"),
 			identity.ClusterID.ValueString()+"/"+identity.ID.ValueString())...)
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("cluster_id"), identity.ClusterID)...)
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, mksNodegroupV2ImportedNew)...)
 
 		return
 	}
@@ -709,7 +743,7 @@ func (r *mksNodegroupV2Resource) ImportState(ctx context.Context, req resource.I
 
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("cluster_id"), clusterID)...)
-	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, []byte("true"))...)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, mksNodegroupV2ImportedNew)...)
 }
 
 const (
@@ -718,9 +752,39 @@ const (
 		"unless the node group was imported and the state has no value yet."
 )
 
+// The import mark is mksNodegroupV2ImportedNew until the first refresh after
+// the import, then mksNodegroupV2ImportedRefreshed, and the refresh after that
+// removes it. So it holds for every plan up to the first apply after the
+// import, which removes it too when it updates the node group.
+var (
+	mksNodegroupV2ImportedNew       = []byte(`"imported"`)
+	mksNodegroupV2ImportedRefreshed = []byte(`"refreshed"`)
+)
+
+// mksNodegroupV2PrivateState is the private state of a Read request or
+// response.
+type mksNodegroupV2PrivateState interface {
+	GetKey(ctx context.Context, key string) ([]byte, diag.Diagnostics)
+	SetKey(ctx context.Context, key string, value []byte) diag.Diagnostics
+}
+
+// mksNodegroupV2AgeImportMark moves the import mark one step on a refresh.
+func mksNodegroupV2AgeImportMark(ctx context.Context, prior, next mksNodegroupV2PrivateState) diag.Diagnostics {
+	mark, diags := prior.GetKey(ctx, mksNodegroupV2ImportedKey)
+	switch {
+	case len(mark) == 0:
+	case string(mark) == string(mksNodegroupV2ImportedNew):
+		diags.Append(next.SetKey(ctx, mksNodegroupV2ImportedKey, mksNodegroupV2ImportedRefreshed)...)
+	default:
+		diags.Append(next.SetKey(ctx, mksNodegroupV2ImportedKey, nil)...)
+	}
+
+	return diags
+}
+
 // mksNodegroupV2ReplaceUnlessImported requires a replacement for a changed
-// value the API never returns, unless the state lacks it because of an
-// import; the first apply after the import clears that mark.
+// value the API never returns, unless the state lacks it because of a recent
+// import, see mksNodegroupV2AgeImportMark.
 func mksNodegroupV2ReplaceUnlessImported(ctx context.Context, stateNull bool, getKey func(context.Context, string) ([]byte, diag.Diagnostics)) bool {
 	if !stateNull {
 		return true
@@ -791,7 +855,7 @@ func mksNodegroupV2CheckCluster(ctx context.Context, client *mksv2.ServiceClient
 // createMKSNodegroupV2 creates the node group and finds its ID: the API
 // returns none, so it is the one listed after the call and absent before it.
 // The lock keeps the provider's other node groups of the cluster out of the
-// difference.
+// difference; the create options narrow out the ones created elsewhere.
 func createMKSNodegroupV2(ctx context.Context, client *mksv2.ServiceClient, clusterID string, opts mksclient.NodegroupCreateStruct) (string, error) {
 	selMutexKV.Lock(clusterID)
 	defer selMutexKV.Unlock(clusterID)
@@ -800,31 +864,140 @@ func createMKSNodegroupV2(ctx context.Context, client *mksv2.ServiceClient, clus
 	if err != nil {
 		return "", errGettingObject("all nodegroups in the cluster", clusterID, err)
 	}
-	known := make(map[string]struct{}, len(before))
+	known := make([]string, 0, len(before))
 	for _, ng := range before {
-		known[ng.Id] = struct{}{}
+		known = append(known, ng.Id)
 	}
 
 	err = nodegroup.Create(ctx, client, clusterID, []mksclient.NodegroupCreateStruct{opts})
 	if err != nil {
+		// The API may have stored the node group before it failed.
+		listCtx, cancel := mksV2ReadAfterWaitContext(ctx)
+		defer cancel()
+		after, listErr := nodegroup.List(listCtx, client, clusterID)
+		created := mksNodegroupV2NewIDs(known, after)
+		if listErr == nil && len(created) > 0 {
+			return "", fmt.Errorf("%w; cluster %s now has new node groups %s that may be this one: "+
+				"import it as <cluster_id>/<nodegroup_id> or delete it", err, clusterID, strings.Join(created, ", "))
+		}
+
 		return "", err
 	}
 
-	after, err := nodegroup.List(ctx, client, clusterID)
+	after, err := mksNodegroupV2ListAfterCreate(ctx, client, clusterID)
 	if err != nil {
-		return "", errGettingObject("all nodegroups in the cluster", clusterID, err)
+		candidates := "any node group of the cluster, which had none before"
+		if len(known) > 0 {
+			candidates = "the node group not among " + strings.Join(known, ", ")
+		}
+
+		return "", fmt.Errorf("the node group was created in cluster %s, but listing the node groups failed, so its ID "+
+			"is unknown: it is %s; import it as <cluster_id>/<nodegroup_id> or delete it: %w",
+			clusterID, candidates, err)
 	}
+	created := mksNodegroupV2NewIDs(known, after)
+	matching := mksNodegroupV2Matching(created, after, opts)
+	if len(matching) == 1 {
+		return matching[0], nil
+	}
+	candidates := created
+	if len(matching) > 1 {
+		candidates = matching
+	}
+
+	return "", fmt.Errorf("can't find the created node group in cluster %s: %d new node groups listed match it, want 1 "+
+		"(candidates: %s); import the right one as <cluster_id>/<nodegroup_id>", clusterID, len(matching), strings.Join(candidates, ", "))
+}
+
+// mksNodegroupV2ListAfterCreate lists the node groups once more if the first
+// attempt fails. It outlives ctx: the node group already exists.
+func mksNodegroupV2ListAfterCreate(ctx context.Context, client *mksv2.ServiceClient, clusterID string) ([]mksclient.NodegroupListItem, error) {
+	listCtx, cancel := mksV2ReadAfterWaitContext(ctx)
+	defer cancel()
+
+	after, err := nodegroup.List(listCtx, client, clusterID)
+	if err == nil {
+		return after, nil
+	}
+	select {
+	case <-listCtx.Done():
+		return nil, err
+	case <-time.After(mksV2PollInterval):
+	}
+
+	after, retryErr := nodegroup.List(listCtx, client, clusterID)
+	if retryErr != nil {
+		return nil, errors.Join(err, retryErr)
+	}
+
+	return after, nil
+}
+
+// mksNodegroupV2NewIDs lists the IDs absent from known.
+func mksNodegroupV2NewIDs(known []string, after []mksclient.NodegroupListItem) []string {
 	var created []string
 	for _, ng := range after {
-		if _, ok := known[ng.Id]; !ok {
+		if !slices.Contains(known, ng.Id) {
 			created = append(created, ng.Id)
 		}
 	}
-	if len(created) != 1 {
-		return "", fmt.Errorf("can't find the created node group in cluster %s: %d new node groups listed, want 1", clusterID, len(created))
+
+	return created
+}
+
+// mksNodegroupV2Matching keeps the created node groups with the segment,
+// labels and flavor_id of the create options. The API returns neither cpus nor
+// ram_mb, so those cannot narrow it.
+func mksNodegroupV2Matching(created []string, after []mksclient.NodegroupListItem, opts mksclient.NodegroupCreateStruct) []string {
+	var matching []string
+	for _, ng := range after {
+		if !slices.Contains(created, ng.Id) || ng.Segment != opts.Segment {
+			continue
+		}
+		if opts.Labels != nil && !maps.Equal(*opts.Labels, ng.Labels) {
+			continue
+		}
+		flavorID := opts.CloudNodegroupConfig.FlavorId
+		if flavorID != "" && (ng.CloudNodegroupConfig == nil || ng.CloudNodegroupConfig.FlavorId != flavorID) {
+			continue
+		}
+		matching = append(matching, ng.Id)
 	}
 
-	return created[0], nil
+	return matching
+}
+
+// mksNodegroupV2CheckFlavorVolume fails when the API replaced a configured
+// local_volume or volume_gb with the value of the flavor_id flavor, see
+// mk-api-v2 validate/flavor.go: Terraform would otherwise report an
+// inconsistent result.
+func mksNodegroupV2CheckFlavorVolume(ctx context.Context, planned types.Object, got *mksclient.CloudNodegroupConfigInfo) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if got == nil || planned.IsNull() || planned.IsUnknown() {
+		return diags
+	}
+	var cloud mksNodegroupV2CloudConfigModel
+	diags.Append(planned.As(ctx, &cloud, basetypes.ObjectAsOptions{UnhandledUnknownAsEmpty: true})...)
+	if diags.HasError() || !cloud.CPUs.IsNull() {
+		return diags
+	}
+
+	var mismatches []string
+	if !cloud.LocalVolume.IsNull() && !cloud.LocalVolume.IsUnknown() && cloud.LocalVolume.ValueBool() != got.LocalVolume {
+		mismatches = append(mismatches, fmt.Sprintf("local_volume = %t, while the configuration sets %t",
+			got.LocalVolume, cloud.LocalVolume.ValueBool()))
+	}
+	if !cloud.VolumeGB.IsNull() && !cloud.VolumeGB.IsUnknown() && cloud.VolumeGB.ValueInt64() != got.VolumeGb {
+		mismatches = append(mismatches, fmt.Sprintf("volume_gb = %d, while the configuration sets %d",
+			got.VolumeGb, cloud.VolumeGB.ValueInt64()))
+	}
+	if len(mismatches) > 0 {
+		diags.AddAttributeError(path.Root("cloud_nodegroup_config"), "Values replaced by the flavor",
+			fmt.Sprintf("Flavor %s gives %s. Omit local_volume and volume_gb when flavor_id is set: "+
+				"the API takes them from the flavor.", got.FlavorId, strings.Join(mismatches, "; ")))
+	}
+
+	return diags
 }
 
 // mksNodegroupV2CallAndWait runs a mutating call on the node group under the
@@ -858,7 +1031,6 @@ func expandMKSNodegroupV2CreateOpts(ctx context.Context, plan mksNodegroupV2Mode
 	opts := mksclient.NodegroupCreateStruct{
 		Count:                     plan.Count.ValueInt64(),
 		Segment:                   plan.Segment.ValueString(),
-		Cidr:                      plan.CIDR.ValueString(),
 		EnableAutoscale:           knownBoolPointer(plan.EnableAutoscale),
 		AutoscaleMinNodes:         knownInt64Pointer(plan.AutoscaleMinNodes),
 		AutoscaleMaxNodes:         knownInt64Pointer(plan.AutoscaleMaxNodes),

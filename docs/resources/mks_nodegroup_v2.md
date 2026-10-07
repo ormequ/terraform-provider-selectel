@@ -62,8 +62,6 @@ resource "selectel_mks_nodegroup_v2" "nodegroup_1" {
 
   * `local_volume` - (Optional) Specifies if nodes use a local volume instead of a network one. Boolean flag.
 
-  * `keypair_name` - (Optional) Name of the SSH key added to all nodes.
-
   * `affinity_policy` - (Optional) Affinity policy of the nodes. Available values are `soft-anti-affinity` and `soft-affinity`. If omitted, `soft-anti-affinity` is used.
 
 * `cidr` - (Optional) CIDR of the node group network. Changing this creates a new node group.
@@ -137,4 +135,4 @@ where:
 
 * `<nodegroup_id>` — Unique identifier of the node group, for example, `63ed5342-b22c-4c7a-9d41-c1fe4a142c13`. To get the node group ID, in the [Control panel](https://my.selectel.ru/vpc/mks/), go to **Cloud Platform** ⟶ **Kubernetes**. Click the required cluster. The node group ID is at the top of the node group card, near the pool.
 
-The API does not return `cloud_nodegroup_config.cpus`, `ram_mb`, `keypair_name`, `affinity_policy` and `cidr` of a cloud node group, so they stay empty after import. Setting them in the configuration of the imported node group fills the state on the next apply and does not create a new node group.
+The API does not return `cloud_nodegroup_config.cpus`, `ram_mb`, `affinity_policy` and `cidr` of a cloud node group, so they stay empty after import. Setting them in the configuration of the imported node group fills the state on the next apply and does not create a new node group.

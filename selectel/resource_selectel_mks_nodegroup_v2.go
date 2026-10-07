@@ -60,7 +60,6 @@ var (
 		"volume_gb":       types.Int64Type,
 		"volume_type":     types.StringType,
 		"local_volume":    types.BoolType,
-		"keypair_name":    types.StringType,
 		"affinity_policy": types.StringType,
 	}
 )
@@ -105,7 +104,6 @@ type mksNodegroupV2CloudConfigModel struct {
 	VolumeGB       types.Int64  `tfsdk:"volume_gb"`
 	VolumeType     types.String `tfsdk:"volume_type"`
 	LocalVolume    types.Bool   `tfsdk:"local_volume"`
-	KeypairName    types.String `tfsdk:"keypair_name"`
 	AffinityPolicy types.String `tfsdk:"affinity_policy"`
 }
 
@@ -289,12 +287,6 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 						Computed:      true,
 						Description:   "Makes the nodes use a local volume instead of a network one.",
 						PlanModifiers: replaceBool,
-					},
-					"keypair_name": schema.StringAttribute{
-						Optional:      true,
-						Computed:      true,
-						Description:   "Name of the SSH key added to all nodes.",
-						PlanModifiers: replaceStringUnlessImported,
 					},
 					"affinity_policy": schema.StringAttribute{
 						Optional:      true,
@@ -821,7 +813,6 @@ func expandMKSNodegroupV2CreateOpts(ctx context.Context, plan mksNodegroupV2Mode
 		VolumeGb:       cloud.VolumeGB.ValueInt64(),
 		VolumeType:     cloud.VolumeType.ValueString(),
 		LocalVolume:    cloud.LocalVolume.ValueBool(),
-		KeypairName:    cloud.KeypairName.ValueString(),
 		AffinityPolicy: cloud.AffinityPolicy.ValueString(),
 	}
 
@@ -877,7 +868,7 @@ func expandMKSNodegroupV2Taints(ctx context.Context, list types.List) ([]mksclie
 }
 
 // fromAPI maps the node group onto the model. The API never returns cpus,
-// ram_mb, keypair_name, affinity_policy, and cidr of a cloud node group, so
+// ram_mb, affinity_policy, and cidr of a cloud node group, so
 // they come from prior. After an apply count is the planned one: the
 // autoscaler may move the nodes at any time.
 func (m *mksNodegroupV2Model) fromAPI(ctx context.Context, ng *mksclient.NodegroupDetailed, prior mksNodegroupV2Model, applied bool) diag.Diagnostics {
@@ -949,7 +940,6 @@ func flattenMKSNodegroupV2CloudConfig(ctx context.Context, info *mksclient.Cloud
 		VolumeGB:       types.Int64Null(),
 		VolumeType:     types.StringNull(),
 		LocalVolume:    types.BoolNull(),
-		KeypairName:    types.StringNull(),
 		AffinityPolicy: types.StringNull(),
 	}
 	if !prior.IsNull() && !prior.IsUnknown() {
@@ -974,7 +964,6 @@ func flattenMKSNodegroupV2CloudConfig(ctx context.Context, info *mksclient.Cloud
 		VolumeGB:       types.Int64Value(info.VolumeGb),
 		VolumeType:     types.StringValue(info.VolumeType),
 		LocalVolume:    types.BoolValue(info.LocalVolume),
-		KeypairName:    knownStringOrNull(priorConfig.KeypairName),
 		AffinityPolicy: knownStringOrNull(priorConfig.AffinityPolicy),
 	})
 	diags.Append(d...)

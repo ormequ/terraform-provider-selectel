@@ -36,7 +36,6 @@ func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
     ram_mb          = 4096
     volume_gb       = 20
     volume_type     = "fast.ru-7a"
-    keypair_name    = "ssh-key"
     affinity_policy = "soft-anti-affinity"
   }
   labels = {
@@ -84,7 +83,6 @@ func TestMKSNodegroupV2ResourceBasic(t *testing.T) {
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.flavor_id", "fake-flavor"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.cpus", "2"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.local_volume", "false"),
-					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.keypair_name", "ssh-key"),
 					func(_ *terraform.State) error {
 						body := testMKSNodegroupV2CreateBody(t, fake)
 						err := testMKSClusterV2BodyFields(body, map[string]any{
@@ -626,7 +624,6 @@ func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
     ram_mb       = 4096
     volume_gb    = 20
     volume_type  = "fast.ru-7a"
-    keypair_name = "ssh-key"
 `+affinityPolicy+`
   }
 `)
@@ -660,7 +657,6 @@ func TestMKSNodegroupV2ResourceImportSetsConfiguredValues(t *testing.T) {
 				Config: config(""),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.cpus", "2"),
-					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cloud_nodegroup_config.keypair_name", "ssh-key"),
 					resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "cidr", "10.20.0.0/24"),
 					calls(0, 0),
 				),

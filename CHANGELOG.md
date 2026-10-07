@@ -2,7 +2,7 @@
 
 IMPROVEMENTS:
 
-* Switched the provider to plugin protocol 6, which requires Terraform 1.0 or later. Resources and data sources are unchanged. ([#436](https://github.com/selectel/terraform-provider-selectel/pull/436))
+* Switched the provider to plugin protocol 6, which requires Terraform 1.1.5 or later. Resources and data sources are unchanged. ([#436](https://github.com/selectel/terraform-provider-selectel/pull/436))
 
 ## 8.6.0 (October 2, 2026)
 

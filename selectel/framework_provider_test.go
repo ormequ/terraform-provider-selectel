@@ -14,21 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testAccProtoV6ProviderFactories serves the provider through the same mux as
-// main.go, plus the selectel_mux_test data source.
-var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
-	"selectel": func() (tfprotov6.ProviderServer, error) {
-		sdk := Provider("test")
-		server, err := muxProviderServer(context.Background(), sdk,
-			testFrameworkProvider{&frameworkProvider{sdk: sdk, version: "test"}})
-		if err != nil {
-			return nil, err
-		}
-
-		return server(), nil
-	},
-}
-
 type testFrameworkProvider struct {
 	*frameworkProvider
 }

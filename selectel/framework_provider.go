@@ -101,11 +101,19 @@ func (p *frameworkProvider) Configure(ctx context.Context, req provider.Configur
 }
 
 func (p *frameworkProvider) Resources(_ context.Context) []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		newMKSClusterV2Resource,
+		newMKSNodegroupV2Resource,
+	}
 }
 
 func (p *frameworkProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		newMKSKubeconfigV2DataSource,
+		newMKSKubeVersionsV2DataSource,
+		newMKSFeatureGatesV2DataSource,
+		newMKSAdmissionControllersV2DataSource,
+	}
 }
 
 func sdkDefault(s *sdkschema.Schema) string {

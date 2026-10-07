@@ -195,6 +195,11 @@ func mksClusterV1GetLatestPatchVersions(ctx context.Context, client *v1.ServiceC
 		return nil, err
 	}
 
+	return latestKubePatchVersions(kubeVersions)
+}
+
+// latestKubePatchVersions maps every minor version to its latest patch version.
+func latestKubePatchVersions(kubeVersions []*kubeversion.View) (map[string]string, error) {
 	result := map[string]string{}
 
 	for _, version := range kubeVersions {

@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,13 @@ func (p testFrameworkProvider) DataSources(ctx context.Context) []func() datasou
 		newMKSKubeVersionsV2DataSource,
 		newMKSFeatureGatesV2DataSource,
 		newMKSAdmissionControllersV2DataSource,
+	)
+}
+
+// Resources adds the _v2 MKS resources until the provider registers them.
+func (p testFrameworkProvider) Resources(ctx context.Context) []func() resource.Resource {
+	return append(p.frameworkProvider.Resources(ctx),
+		newMKSClusterV2Resource,
 	)
 }
 
@@ -105,6 +113,7 @@ func TestProviderServerSchema(t *testing.T) {
 			assert.Contains(t, resp.ResourceSchemas, "selectel_vpc_project_v2")
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_mux_test")
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_mks_kubeconfig_v2")
+			assert.Contains(t, resp.ResourceSchemas, "selectel_mks_cluster_v2")
 		})
 	}
 }

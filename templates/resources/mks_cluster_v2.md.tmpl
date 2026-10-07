@@ -1,0 +1,144 @@
+---
+page_title: "Selectel: selectel_mks_cluster_v2"
+description: |-
+  Creates and manages a cluster in Selectel Managed Kubernetes using API v2.
+---
+
+{{/* This template serves as a starting point for documentation generation, and can be customized with hardcoded values and/or doc gen templates.
+
+For example, the {{ .SchemaMarkdown }} template can be used to replace manual schema documentation if descriptions of schema attributes are added in the provider source code. */ -}}
+
+# selectel\_mks\_cluster\_v2
+
+Creates and manages a Managed Kubernetes cluster using API v2. For more information about Managed Kubernetes, see the [official Selectel documentation](https://docs.selectel.ru/en/cloud/managed-kubernetes/).
+
+The resource waits for the cluster tasks of every operation. When a task fails, the operation fails with the task type, ID and error details.
+
+## Example Usage
+
+{{tffile "examples/resources/selectel_mks_cluster_v2/resource.tf"}}
+
+## Argument Reference
+
+* `name` - (Required) Cluster name. Changing this creates a new cluster. The cluster name is included into the names of the cluster entities: node groups, nodes, load balancers, networks, and volumes.
+
+* `pool` - (Required) Pool where the cluster is located, for example, `ru-7`. Changing this creates a new cluster. Learn more about available pools in [Product availability by location](https://docs.selectel.ru/en/infrastructure/product-availability-by-location/).
+
+* `project_id` - (Optional) Unique identifier of the associated project. Changing this creates a new cluster. If omitted, the `project_id` of the provider configuration is used. Retrieved from the [selectel_vpc_project_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/vpc_project_v2) resource. Learn more about [Projects](https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/).
+
+* `kube_version` - (Required) Kubernetes version of the cluster in the `x.y.z` format. Changing this upgrades the cluster. You can retrieve information about the Kubernetes versions with the [selectel_mks_kube_versions_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/mks_kube_versions_v2) data source.
+
+  To upgrade a patch version, set the latest available patch version of the current minor version.
+
+  To upgrade a minor version, set the next minor version. Minor versions are upgraded one at a time.
+
+  A downgrade or a skipped minor version fails at plan. While patch auto-upgrade moves the cluster to a newer patch version of the configured minor version, the configured version stays in the state.
+
+* `workers_type` - (Required) Type of the worker nodes the cluster accepts. Changing this creates a new cluster with all its node groups. Available values are:
+
+  * `CLOUD` - only cloud node groups;
+
+  * `DEDICATED` - only dedicated servers.
+
+* `cluster_type` - (Optional) Cluster type. Changing this creates a new cluster. Available values are:
+
+  * `BASIC` - one master node;
+
+  * `HIGH_AVAILABILITY` (default) - three master nodes in one availability zone;
+
+  * `HIGH_AVAILABILITY_MULTI_AZ` - three master nodes in three availability zones.
+
+  Learn more about [Cluster types](https://docs.selectel.ru/en/cloud/managed-kubernetes/about/about-managed-kubernetes/#cluster-types).
+
+* `network_id` - (Optional) Unique identifier of the network of the cluster. Changing this creates a new cluster. If omitted, the network is created.
+
+* `subnet_id` - (Optional) Unique identifier of the subnet of the cluster. Changing this creates a new cluster. If omitted, the subnet is created.
+
+* `cloud_subnet_cidr` - (Optional) CIDR of the subnet created for the cluster. Changing this creates a new cluster. The API does not return it, so an imported cluster has no value.
+
+* `private_kube_api` - (Optional) Specifies if Kube API is available only from the cluster network. Changing this creates a new cluster. Boolean flag, the default value is `false`.
+
+* `maintenance_window_start` - (Optional) Time in UTC when maintenance in the cluster starts. The format is `hh:mm:ss`. Learn more about the [Maintenance window](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/set-up-maintenance-window/).
+
+* `enable_autorepair` - (Optional) Enables or disables node auto-repairing. Boolean flag, the default value is `true`. Learn more about [Nodes auto-repairing](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/reinstall-nodes/).
+
+* `enable_patch_version_auto_upgrade` - (Optional) Enables or disables auto-upgrading of the cluster to the latest available Kubernetes patch version during the maintenance window. If omitted, it is enabled for all cluster types except `BASIC`. Cannot be `true` when `cluster_type` is `BASIC`. Learn more about [Patch versions auto-upgrading](https://docs.selectel.ru/en/managed-kubernetes/clusters/upgrade-version/#update-patch-release).
+
+* `cni_type` - (Optional) Type of CNI used by the cluster. Changing this creates a new cluster. Available values are `CALICO` and `CILIUM`. If omitted, `CALICO` is used.
+
+* `cni_cilium_settings` - (Optional) Settings for the Cilium CNI. Used only when `cni_type` is `CILIUM`.
+
+  * `envoy_daemonset` - (Optional) Enables [Envoy DaemonSet for Cilium CNI](https://docs.cilium.io/en/latest/security/network/proxy/envoy/#envoy). Boolean flag.
+
+  * `hubble_relay` - (Optional) Enables [Hubble Relay for Cilium CNI](https://docs.cilium.io/en/stable/internals/hubble/#hubble-relay). Boolean flag.
+
+* `kubernetes_options` - (Optional) Kubernetes options of the cluster. The provider always sends the whole object, because the API replaces the options entirely. An option you remove from the configuration keeps its last value; set it to an empty value to reset it.
+
+  * `feature_gates` - (Optional) Enabled feature gates. You can retrieve the list of available feature gates with the [selectel_mks_feature_gates_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/mks_feature_gates_v2) data source.
+
+  * `admission_controllers` - (Optional) Enabled admission controllers. You can retrieve the list of available admission controllers with the [selectel_mks_admission_controllers_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/mks_admission_controllers_v2) data source.
+
+  * `audit_logs` - (Optional) Collection of audit logs. Learn how to [configure export of audit logs to a logging system](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/logs/#configure-export-of-audit-logs).
+
+    * `enabled` - (Optional) Enables or disables collection of audit logs.
+
+    * `secret_name` - (Optional) Name of the secret in the `kube-system` namespace with the credentials of the logging system.
+
+  * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection).
+
+    * `enabled` - (Optional) Enables or disables authentication with OpenID Connect.
+
+    * `provider_name` - (Optional) Name of the connection, for identification only. Required when `enabled` is `true`.
+
+    * `issuer_url` - (Optional) URL of the OIDC provider. It must start with `https://`. Required when `enabled` is `true`.
+
+    * `client_id` - (Optional) Client ID that all tokens must be issued for. Required when `enabled` is `true`.
+
+    * `username_claim` - (Optional) JWT claim to use as the username.
+
+    * `groups_claim` - (Optional) JWT claim to use as the user's group.
+
+    * `ca_certs` - (Optional) CA certificates of the OIDC provider in the PEM format.
+
+  * `x509_ca_certificates` - (Optional) Custom X509 CA certificates for the cluster components, base64-encoded. The API does not return them, so an imported cluster has no value.
+
+* `timeouts` - (Optional) Timeouts of the `create`, `update` and `delete` operations, for example, `30m`. The default value of each is `60m`.
+
+## Attributes Reference
+
+* `id` - Unique identifier of the cluster.
+
+* `maintenance_window_end` - Time in UTC when maintenance in the cluster ends. The format is `hh:mm:ss`.
+
+* `kube_api_ip` - IP address of the Kube API.
+
+* `status` - Cluster status.
+
+## Import
+
+You can import a cluster:
+
+```shell
+export OS_DOMAIN_NAME=<account_id>
+export OS_USERNAME=<username>
+export OS_PASSWORD=<password>
+export INFRA_PROJECT_ID=<selectel_project_id>
+export INFRA_REGION=<selectel_pool>
+terraform import selectel_mks_cluster_v2.cluster_name <cluster_id>
+```
+
+where:
+
+* `<account_id>` — Selectel account ID. The account ID is in the top right corner of the [Control panel](https://my.selectel.ru/). Learn more about [Registration](https://docs.selectel.ru/en/control-panel-actions/account/registration/).
+
+* `<username>` — Name of the service user. To get the name, in the [Control panel](https://my.selectel.ru/iam/users_management/users?type=service), go to **Identity & Access Management** ⟶ **User management** ⟶ the **Service users** tab ⟶ copy the name of the required user. Learn more about [Service users](https://docs.selectel.ru/en/control-panel-actions/users-and-roles/user-types-and-roles/).
+
+* `<password>` — Password of the service user.
+
+* `<selectel_project_id>` — Unique identifier of the associated project. To get the ID, in the [Control panel](https://my.selectel.ru/vpc/mks), go to **Cloud Platform** ⟶ project name ⟶ copy the ID of the required project. Learn more about [Projects](https://docs.selectel.ru/en/cloud/managed-kubernetes/about/projects/).
+
+* `<selectel_pool>` — Pool where the cluster is located, for example, `ru-7`. To get information about the pool, in the [Control panel](https://my.selectel.ru/vpc/mks/), go to **Cloud Platform** ⟶ **Kubernetes**. The pool is in the **Pool** column.
+
+* `<cluster_id>` — Unique identifier of the cluster, for example, `b311ce58-2658-46b5-b733-7a0f418703f2`. To get the cluster ID, in the [Control panel](https://my.selectel.ru/vpc/mks/), go to **Cloud Platform** ⟶ **Kubernetes** ⟶ the cluster page ⟶ copy the ID at the top of the page under the cluster name, near the region and pool.
+
+`cloud_subnet_cidr` and `kubernetes_options.x509_ca_certificates` stay empty after import.

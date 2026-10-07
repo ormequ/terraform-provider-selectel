@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -15,6 +17,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/selectel/mks-go/pkg/v1/kubeoptions"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
+	"github.com/selectel/mks-go/v2/pkg/cluster"
+	"github.com/selectel/mks-go/v2/pkg/mksclient"
+	"github.com/selectel/mks-go/v2/pkg/task"
 )
 
 // mksV2ClientFn builds the mk-api-v2 client for every _v2 resource and data
@@ -72,40 +77,45 @@ func mksV2ProjectID(attr types.String, config *Config) (string, diag.Diagnostics
 	}
 
 	diags.AddAttributeError(path.Root("project_id"), "Missing project ID",
-		"Set project_id in the data source or in the provider configuration.")
+		"Set project_id in the resource or data source, or in the provider configuration.")
 
 	return "", diags
 }
 
-// mksV2DataSource holds the provider Config for the _v2 data sources.
-type mksV2DataSource struct {
+// mksV2Provided holds the provider Config for the _v2 resources and data
+// sources.
+type mksV2Provided struct {
 	config *Config
 }
 
-func (d *mksV2DataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
+func (p *mksV2Provided) configure(providerData any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	if providerData == nil {
+		return diags
 	}
 
-	config, ok := req.ProviderData.(*Config)
+	config, ok := providerData.(*Config)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected provider data",
-			fmt.Sprintf("Expected *Config, got %T. Please report this issue to the provider developers.", req.ProviderData))
+		diags.AddError("Unexpected provider data",
+			fmt.Sprintf("Expected *Config, got %T. Please report this issue to the provider developers.", providerData))
 
-		return
+		return diags
 	}
 
-	d.config = config
+	p.config = config
+
+	return diags
 }
 
 // client resolves the project ID and builds the mk-api-v2 client for it.
-func (d *mksV2DataSource) client(ctx context.Context, projectIDAttr types.String, pool string) (*mksv2.ServiceClient, string, diag.Diagnostics) {
-	projectID, diags := mksV2ProjectID(projectIDAttr, d.config)
+func (p *mksV2Provided) client(ctx context.Context, projectIDAttr types.String, pool string) (*mksv2.ServiceClient, string, diag.Diagnostics) {
+	projectID, diags := mksV2ProjectID(projectIDAttr, p.config)
 	if diags.HasError() {
 		return nil, "", diags
 	}
 
-	client, err := mksV2ClientFn(ctx, d.config, projectID, pool)
+	client, err := mksV2ClientFn(ctx, p.config, projectID, pool)
 	if err != nil {
 		diags.AddError("Error initializing MKS client", err.Error())
 
@@ -113,6 +123,15 @@ func (d *mksV2DataSource) client(ctx context.Context, projectIDAttr types.String
 	}
 
 	return client, projectID, diags
+}
+
+// mksV2DataSource holds the provider Config for the _v2 data sources.
+type mksV2DataSource struct {
+	mksV2Provided
+}
+
+func (d *mksV2DataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+	resp.Diagnostics.Append(d.configure(req.ProviderData)...)
 }
 
 // valueOrZero dereferences an optional field of an mk-api-v2 model.
@@ -300,4 +319,185 @@ func (d *mksKubeOptionsV2DataSource) filterViews(views []*kubeoptions.View, filt
 	}
 
 	return []*kubeoptions.View{{KubeVersion: kubeMinorVersion, Names: names}}, checksum, nil
+}
+
+// mksV2PollInterval is how often the _v2 waiters poll mk-api-v2. Tests shorten it.
+var mksV2PollInterval = 10 * time.Second
+
+const mksV2TaskPageSize = 100
+
+// isMKSV2NotFound reports whether mk-api-v2 answered 404.
+func isMKSV2NotFound(err error) bool {
+	var mksErr *mksclient.MKSError
+
+	return errors.As(err, &mksErr) && mksErr.StatusCode == http.StatusNotFound
+}
+
+// mksV2TaskWaiter waits for the tasks one mutating mk-api-v2 call created.
+// The API returns no task ID: its handlers insert the task rows in the same
+// transaction before they respond, so the call's tasks are the ones listed
+// after it and absent before it.
+type mksV2TaskWaiter struct {
+	client    *mksv2.ServiceClient
+	clusterID string
+	// nodegroupID is the scope: an empty one counts only the cluster tasks,
+	// which have no nodegroup_id, any other only the tasks of that nodegroup.
+	nodegroupID string
+	before      map[string]struct{}
+}
+
+// newMKSV2TaskWaiter remembers the tasks in scope before a mutating call.
+func newMKSV2TaskWaiter(ctx context.Context, client *mksv2.ServiceClient, clusterID, nodegroupID string) (*mksV2TaskWaiter, error) {
+	w := newMKSV2CreatedTaskWaiter(client, clusterID, nodegroupID)
+
+	tasks, err := w.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tasks {
+		w.before[t.Id] = struct{}{}
+	}
+
+	return w, nil
+}
+
+// newMKSV2CreatedTaskWaiter counts every task in scope, for an object that did
+// not exist before the call.
+func newMKSV2CreatedTaskWaiter(client *mksv2.ServiceClient, clusterID, nodegroupID string) *mksV2TaskWaiter {
+	return &mksV2TaskWaiter{
+		client:      client,
+		clusterID:   clusterID,
+		nodegroupID: nodegroupID,
+		before:      map[string]struct{}{},
+	}
+}
+
+// Wait polls the new tasks until all of them are DONE. No new tasks means the
+// call was synchronous.
+func (w *mksV2TaskWaiter) Wait(ctx context.Context) error {
+	pending, err := w.newTasks(ctx)
+	if err != nil {
+		return err
+	}
+
+	return mksV2Poll(ctx, func() (bool, error) {
+		pending, err = w.advance(ctx, pending)
+
+		return len(pending) == 0, err
+	})
+}
+
+// WaitClusterDeleted polls until the cluster is gone and fails when one of the
+// new tasks fails first.
+func (w *mksV2TaskWaiter) WaitClusterDeleted(ctx context.Context) error {
+	pending, err := w.newTasks(ctx)
+	if isMKSV2NotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return mksV2Poll(ctx, func() (bool, error) {
+		pending, err = w.advance(ctx, pending)
+		if isMKSV2NotFound(err) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+
+		_, err = cluster.Get(ctx, w.client, w.clusterID)
+		if isMKSV2NotFound(err) {
+			return true, nil
+		}
+
+		return false, err
+	})
+}
+
+// list returns every task of the cluster in the waiter scope.
+func (w *mksV2TaskWaiter) list(ctx context.Context) ([]mksclient.Task, error) {
+	var result []mksclient.Task
+	for offset := uint64(0); ; offset += mksV2TaskPageSize {
+		page, err := task.List(ctx, w.client, w.clusterID, mksV2TaskPageSize, offset)
+		if err != nil {
+			return nil, fmt.Errorf("error listing tasks of cluster %s: %w", w.clusterID, err)
+		}
+		for _, t := range page {
+			if valueOrZero(t.NodegroupId) == w.nodegroupID {
+				result = append(result, t)
+			}
+		}
+		if len(page) < mksV2TaskPageSize {
+			return result, nil
+		}
+	}
+}
+
+func (w *mksV2TaskWaiter) newTasks(ctx context.Context) ([]mksclient.Task, error) {
+	tasks, err := w.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.DeleteFunc(tasks, func(t mksclient.Task) bool {
+		_, ok := w.before[t.Id]
+
+		return ok
+	}), nil
+}
+
+// advance refreshes the pending tasks and returns the ones still running.
+func (w *mksV2TaskWaiter) advance(ctx context.Context, pending []mksclient.Task) ([]mksclient.Task, error) {
+	var running []mksclient.Task
+	for _, p := range pending {
+		t, err := task.Get(ctx, w.client, w.clusterID, p.Id)
+		if err != nil {
+			return pending, fmt.Errorf("error getting task %s of cluster %s: %w", p.Id, w.clusterID, err)
+		}
+
+		switch t.Status {
+		case mksclient.DONE:
+		case mksclient.ERROR, mksclient.CANCELED:
+			return nil, mksV2TaskError(t)
+		case mksclient.INQUEUE, mksclient.INPROGRESS:
+			running = append(running, *t)
+		default:
+			// A status newer than the client: keep polling.
+			running = append(running, *t)
+		}
+	}
+
+	return running, nil
+}
+
+func mksV2TaskError(t *mksclient.Task) error {
+	msg := fmt.Sprintf("task %s %s of cluster %s ended in %s", t.Type, t.Id, t.ClusterId, t.Status)
+	if t.ErrorDetails != nil {
+		msg += fmt.Sprintf(": %s (code %d)", t.ErrorDetails.Name, t.ErrorDetails.Code)
+		details := valueOrZero(t.ErrorDetails.Details)
+		if details != "" {
+			msg += ": " + details
+		}
+	}
+
+	return errors.New(msg)
+}
+
+// mksV2Poll calls check every mksV2PollInterval until it reports done, fails,
+// or ctx ends.
+func mksV2Poll(ctx context.Context, check func() (bool, error)) error {
+	for {
+		done, err := check()
+		if err != nil || done {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout while waiting: %w", ctx.Err())
+		case <-time.After(mksV2PollInterval):
+		}
+	}
 }

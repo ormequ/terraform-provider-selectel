@@ -35,6 +35,7 @@ func (p testFrameworkProvider) DataSources(ctx context.Context) []func() datasou
 func (p testFrameworkProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return append(p.frameworkProvider.Resources(ctx),
 		newMKSClusterV2Resource,
+		newMKSNodegroupV2Resource,
 	)
 }
 
@@ -114,6 +115,7 @@ func TestProviderServerSchema(t *testing.T) {
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_mux_test")
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_mks_kubeconfig_v2")
 			assert.Contains(t, resp.ResourceSchemas, "selectel_mks_cluster_v2")
+			assert.Contains(t, resp.ResourceSchemas, "selectel_mks_nodegroup_v2")
 		})
 	}
 }

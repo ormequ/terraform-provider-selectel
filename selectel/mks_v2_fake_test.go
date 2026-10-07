@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -24,8 +25,11 @@ import (
 type mksV2Fake struct {
 	server *httptest.Server
 
-	mu                   sync.Mutex
-	clusters             map[string]mksclient.ClusterDetailed
+	mu       sync.Mutex
+	clusters map[string]mksclient.ClusterDetailed
+	// nodegroups are keyed by their ID, which the fake numbers ng-1, ng-2...
+	nodegroups           map[string]mksclient.NodegroupDetailed
+	nodegroupSeq         int
 	kubeconfigs          map[string]string
 	kubeVersions         []mksclient.KubeVersionInfo
 	featureGates         []mksclient.AvailableFeatureGates
@@ -71,6 +75,12 @@ const (
 	mksV2RouteUpgradeMinor         = "POST /v2/clusters/{cluster_id}/upgrade-minor-version"
 	mksV2RouteTasks                = "GET /v2/clusters/{cluster_id}/tasks"
 	mksV2RouteTask                 = "GET /v2/clusters/{cluster_id}/tasks/{task_id}"
+	mksV2RouteNodegroups           = "GET /v2/clusters/{cluster_id}/nodegroups"
+	mksV2RouteCreateNodegroups     = "POST /v2/clusters/{cluster_id}/nodegroups"
+	mksV2RouteNodegroup            = "GET /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	mksV2RoutePatchNodegroup       = "PATCH /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	mksV2RouteDeleteNodegroup      = "DELETE /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	mksV2RouteResizeNodegroup      = "POST /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}/resize"
 )
 
 // newMKSV2Fake starts the fake and makes mksV2ClientFn return clients of it
@@ -80,6 +90,7 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 
 	f := &mksV2Fake{
 		clusters:    map[string]mksclient.ClusterDetailed{},
+		nodegroups:  map[string]mksclient.NodegroupDetailed{},
 		kubeconfigs: map[string]string{},
 		failures:    map[string]int{},
 
@@ -107,6 +118,12 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	f.handle(mux, mksV2RouteUpgradeMinor, f.upgradeCluster(true))
 	f.handle(mux, mksV2RouteTasks, f.listTasks)
 	f.handle(mux, mksV2RouteTask, f.getTask)
+	f.handle(mux, mksV2RouteNodegroups, f.listNodegroups)
+	f.handle(mux, mksV2RouteCreateNodegroups, f.createNodegroups)
+	f.handle(mux, mksV2RouteNodegroup, f.getNodegroup)
+	f.handle(mux, mksV2RoutePatchNodegroup, f.patchNodegroup)
+	f.handle(mux, mksV2RouteDeleteNodegroup, f.deleteNodegroup)
+	f.handle(mux, mksV2RouteResizeNodegroup, f.resizeNodegroup)
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 
@@ -588,4 +605,255 @@ func useMKSV2TestConfig(t *testing.T) {
 		once = sync.Once{}
 		cfgSingletone = nil
 	})
+}
+
+// listNodegroups lists the nodegroups of the cluster.
+func (f *mksV2Fake) listNodegroups(w http.ResponseWriter, r *http.Request) {
+	clusterID := r.PathValue("cluster_id")
+	if _, ok := f.clusters[clusterID]; !ok {
+		writeMKSV2Error(w, http.StatusNotFound, clusterID)
+
+		return
+	}
+
+	items := []mksclient.NodegroupListItem{}
+	for _, id := range slices.Sorted(maps.Keys(f.nodegroups)) {
+		ng := f.nodegroups[id]
+		if ng.ClusterId != clusterID {
+			continue
+		}
+		items = append(items, mksclient.NodegroupListItem{
+			Id:        ng.Id,
+			ClusterId: ng.ClusterId,
+			Segment:   ng.Segment,
+			Status:    mksclient.NodegroupListItemStatus(ng.Status),
+			Nodes:     ng.Nodes,
+		})
+	}
+
+	writeMKSV2JSON(w, http.StatusOK, mksclient.NodegroupList{Nodegroups: items})
+}
+
+// createNodegroups fills what the API defaults and starts a CLUSTER_RESIZE
+// task per nodegroup, which adds the nodes. Like the API it answers 204 with
+// no body and never returns the CIDR of a cloud nodegroup.
+func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
+	clusterID := r.PathValue("cluster_id")
+	if _, ok := f.clusters[clusterID]; !ok {
+		writeMKSV2Error(w, http.StatusNotFound, clusterID)
+
+		return
+	}
+	var body mksclient.NodegroupsCreateBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil || len(body.Nodegroups) == 0 {
+		writeMKSV2Error(w, http.StatusBadRequest, clusterID)
+
+		return
+	}
+
+	for _, opts := range body.Nodegroups {
+		f.nodegroupSeq++
+		id := fmt.Sprintf("ng-%d", f.nodegroupSeq)
+		cloud := valueOrZero(opts.CloudNodegroupConfig)
+		f.nodegroups[id] = mksclient.NodegroupDetailed{
+			Id:                        id,
+			ClusterId:                 clusterID,
+			Segment:                   opts.Segment,
+			Status:                    mksclient.NodegroupDetailedStatusPENDINGCREATE,
+			NodegroupType:             mksclient.NodegroupDetailedNodegroupTypeSTANDARD,
+			EnableAutoscale:           valueOr(opts.EnableAutoscale, false),
+			AutoscaleMinNodes:         new(valueOr(opts.AutoscaleMinNodes, 0)),
+			AutoscaleMaxNodes:         new(valueOr(opts.AutoscaleMaxNodes, 0)),
+			InstallNvidiaDevicePlugin: valueOr(opts.InstallNvidiaDevicePlugin, false),
+			Preemptible:               opts.Preemptible,
+			Labels:                    valueOr(opts.Labels, map[string]string{}),
+			Taints:                    valueOr(opts.Taints, []mksclient.NodegroupTaint{}),
+			UserData:                  opts.UserData,
+			Nodes:                     []mksclient.Node{},
+			CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{
+				FlavorId:    cmp.Or(cloud.FlavorId, "fake-flavor"),
+				VolumeGb:    cloud.VolumeGb,
+				VolumeType:  cloud.VolumeType,
+				LocalVolume: cloud.LocalVolume,
+			},
+		}
+		count := opts.Count
+		f.addNodegroupTask(clusterID, id, "CLUSTER_RESIZE", func() {
+			ng := f.nodegroups[id]
+			ng.Status = mksclient.NodegroupDetailedStatusACTIVE
+			ng.Nodes = mksV2FakeNodes(id, count)
+			f.nodegroups[id] = ng
+		})
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// nodegroup returns the nodegroup of the request path, or answers 404.
+func (f *mksV2Fake) nodegroup(w http.ResponseWriter, r *http.Request) (mksclient.NodegroupDetailed, bool) {
+	clusterID, id := r.PathValue("cluster_id"), r.PathValue("nodegroup_id")
+	ng, ok := f.nodegroups[id]
+	if _, clusterExists := f.clusters[clusterID]; !ok || !clusterExists || ng.ClusterId != clusterID {
+		writeMKSV2Error(w, http.StatusNotFound, id)
+
+		return ng, false
+	}
+
+	return ng, true
+}
+
+func (f *mksV2Fake) getNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroup(w, r)
+	if ok {
+		writeMKSV2JSON(w, http.StatusOK, mksclient.NodegroupResp{Nodegroup: ng})
+	}
+}
+
+// patchNodegroup applies autoscale settings at once and labels and taints
+// with their tasks, like the API.
+func (f *mksV2Fake) patchNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroup(w, r)
+	if !ok {
+		return
+	}
+	var body mksclient.NodegroupUpdateBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil {
+		writeMKSV2Error(w, http.StatusBadRequest, ng.Id)
+
+		return
+	}
+	opts := body.Nodegroup
+
+	ng.EnableAutoscale = valueOr(opts.EnableAutoscale, ng.EnableAutoscale)
+	if opts.AutoscaleMinNodes != nil {
+		ng.AutoscaleMinNodes = new(int64(*opts.AutoscaleMinNodes))
+	}
+	if opts.AutoscaleMaxNodes != nil {
+		ng.AutoscaleMaxNodes = new(int64(*opts.AutoscaleMaxNodes))
+	}
+	f.nodegroups[ng.Id] = ng
+
+	id := ng.Id
+	if opts.Labels != nil {
+		f.addNodegroupTask(ng.ClusterId, id, "UPDATE_NODEGROUP_LABELS", func() {
+			ng := f.nodegroups[id]
+			ng.Labels = *opts.Labels
+			f.nodegroups[id] = ng
+		})
+	}
+	if opts.Taints != nil {
+		f.addNodegroupTask(ng.ClusterId, id, "UPDATE_NODEGROUP_TAINTS", func() {
+			ng := f.nodegroups[id]
+			ng.Taints = *opts.Taints
+			f.nodegroups[id] = ng
+		})
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *mksV2Fake) resizeNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroup(w, r)
+	if !ok {
+		return
+	}
+	var body mksclient.NodegroupResizeBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil {
+		writeMKSV2Error(w, http.StatusBadRequest, ng.Id)
+
+		return
+	}
+
+	id := ng.Id
+	f.addNodegroupTask(ng.ClusterId, id, "NODE_GROUP_RESIZE", func() {
+		ng := f.nodegroups[id]
+		ng.Nodes = mksV2FakeNodes(id, body.Nodegroup.Desired)
+		f.nodegroups[id] = ng
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteNodegroup removes the nodegroup when its CLUSTER_RESIZE task is DONE.
+func (f *mksV2Fake) deleteNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroup(w, r)
+	if !ok {
+		return
+	}
+
+	ng.Status = mksclient.NodegroupDetailedStatusPENDINGDELETE
+	f.nodegroups[ng.Id] = ng
+	id := ng.Id
+	f.addNodegroupTask(ng.ClusterId, id, "CLUSTER_RESIZE", func() { delete(f.nodegroups, id) })
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *mksV2Fake) addNodegroupTask(clusterID, nodegroupID, taskType string, effect func()) {
+	f.addTask(clusterID, taskType, effect)
+	f.tasks[len(f.tasks)-1].task.NodegroupId = &nodegroupID
+}
+
+func mksV2FakeNodes(nodegroupID string, count int64) []mksclient.Node {
+	nodes := make([]mksclient.Node, count)
+	for i := range nodes {
+		nodes[i] = mksclient.Node{
+			Id:          fmt.Sprintf("%s-node-%d", nodegroupID, i+1),
+			Ip:          fmt.Sprintf("198.51.100.%d", i+1),
+			Hostname:    fmt.Sprintf("%s-node-%d", nodegroupID, i+1),
+			NodegroupId: nodegroupID,
+		}
+	}
+
+	return nodes
+}
+
+// seedNodegroup adds a nodegroup the provider did not create.
+func (f *mksV2Fake) seedNodegroup(ng mksclient.NodegroupDetailed) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.nodegroups[ng.Id] = ng
+}
+
+// updateNodegroup changes a nodegroup behind the provider's back.
+func (f *mksV2Fake) updateNodegroup(id string, update func(ng *mksclient.NodegroupDetailed)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ng := f.nodegroups[id]
+	update(&ng)
+	f.nodegroups[id] = ng
+}
+
+// removeNodegroup deletes a nodegroup behind the provider's back.
+func (f *mksV2Fake) removeNodegroup(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.nodegroups, id)
+}
+
+// clientPools returns the pool of every client built so far.
+func (f *mksV2Fake) clientPools() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	pools := make([]string, len(f.clients))
+	for i, c := range f.clients {
+		pools[i] = c.pool
+	}
+
+	return pools
+}
+
+// hasNodegroup reports whether the fake still has the nodegroup.
+func (f *mksV2Fake) hasNodegroup(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	_, ok := f.nodegroups[id]
+
+	return ok
 }

@@ -19,6 +19,7 @@ import (
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/cluster"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
+	"github.com/selectel/mks-go/v2/pkg/nodegroup"
 	"github.com/selectel/mks-go/v2/pkg/task"
 )
 
@@ -390,6 +391,26 @@ func (w *mksV2TaskWaiter) Wait(ctx context.Context) error {
 // WaitClusterDeleted polls until the cluster is gone and fails when one of the
 // new tasks fails first.
 func (w *mksV2TaskWaiter) WaitClusterDeleted(ctx context.Context) error {
+	return w.waitDeleted(ctx, func() error {
+		_, err := cluster.Get(ctx, w.client, w.clusterID)
+
+		return err
+	})
+}
+
+// WaitNodegroupDeleted polls until the nodegroup of the waiter scope is gone
+// and fails when one of the new tasks fails first.
+func (w *mksV2TaskWaiter) WaitNodegroupDeleted(ctx context.Context) error {
+	return w.waitDeleted(ctx, func() error {
+		_, err := nodegroup.Get(ctx, w.client, w.clusterID, w.nodegroupID)
+
+		return err
+	})
+}
+
+// waitDeleted polls until get answers 404. A 404 on the tasks means the
+// cluster, and everything in it, is gone.
+func (w *mksV2TaskWaiter) waitDeleted(ctx context.Context, get func() error) error {
 	pending, err := w.newTasks(ctx)
 	if isMKSV2NotFound(err) {
 		return nil
@@ -407,7 +428,7 @@ func (w *mksV2TaskWaiter) WaitClusterDeleted(ctx context.Context) error {
 			return false, err
 		}
 
-		_, err = cluster.Get(ctx, w.client, w.clusterID)
+		err = get()
 		if isMKSV2NotFound(err) {
 			return true, nil
 		}

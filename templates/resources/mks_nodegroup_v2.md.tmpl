@@ -1,7 +1,7 @@
 ---
 page_title: "Selectel: selectel_mks_nodegroup_v2"
 description: |-
-  Creates and manages a cloud node group in Selectel Managed Kubernetes using API v2.
+  Creates and manages a node group of cloud or dedicated servers in Selectel Managed Kubernetes using API v2.
 ---
 
 {{/* This template serves as a starting point for documentation generation, and can be customized with hardcoded values and/or doc gen templates.
@@ -10,25 +10,35 @@ For example, the {{ .SchemaMarkdown }} template can be used to replace manual sc
 
 # selectel\_mks\_nodegroup\_v2
 
-Creates and manages a Managed Kubernetes cloud node group using API v2. For more information about node groups, see the [official Selectel documentation](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/).
+Creates and manages a Managed Kubernetes node group of cloud or dedicated servers using API v2. For more information about node groups, see the [official Selectel documentation](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/).
 
-The node group takes the project from the provider configuration: set `project_id` in the provider or the `INFRA_PROJECT_ID` environment variable. The pool is derived from `segment`.
+A node group is either a cloud one, with `cloud_nodegroup_config`, or a dedicated one, with `dedicated_nodegroup_config`. Set exactly one of them. The `workers_type` of the cluster decides which one is allowed: a `CLOUD` cluster accepts only cloud node groups, a `DEDICATED` cluster accepts only dedicated servers, and changing `workers_type` creates a new cluster.
+
+The node group takes the project from the provider configuration: set `project_id` in the provider or the `INFRA_PROJECT_ID` environment variable. The pool of a cloud node group is derived from `segment`. A dedicated node group takes the pool from the provider configuration: set `region` in the provider or the `INFRA_REGION` environment variable to the pool of the cluster.
 
 The resource waits for the node group tasks of every operation. When a task fails, the operation fails with the task type, ID and error details.
 
 ## Example Usage
 
+### Cloud node group
+
 {{tffile "examples/resources/selectel_mks_nodegroup_v2/resource.tf"}}
+
+### Dedicated node group
+
+The cluster has `workers_type = "DEDICATED"`, and the server configuration comes from the [selectel_dedicated_configuration_v1](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/dedicated_configuration_v1) data source:
+
+{{tffile "examples/resources/selectel_mks_nodegroup_v2/dedicated.tf"}}
 
 ## Argument Reference
 
-* `cluster_id` - (Required) Unique identifier of the cluster. Changing this creates a new node group. Retrieved from the [selectel_mks_cluster_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/mks_cluster_v2) resource. The cluster must have `workers_type = "CLOUD"`: a cloud node group for a `DEDICATED` cluster fails at plan, or before any request when the cluster is created in the same apply.
+* `cluster_id` - (Required) Unique identifier of the cluster. Changing this creates a new node group. Retrieved from the [selectel_mks_cluster_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/mks_cluster_v2) resource. A cluster with `workers_type = "CLOUD"` accepts only `cloud_nodegroup_config`, a cluster with `workers_type = "DEDICATED"` accepts only `dedicated_nodegroup_config`. A node group of the other kind fails at plan, or before any request when the cluster is created in the same apply.
 
-* `segment` - (Required) Pool segment where all nodes of the node group are located, for example, `ru-7a`. Changing this creates a new node group. Learn more about available pool segments in the [Availability matrix](https://docs.selectel.ru/en/control-panel-actions/availability-matrix/#managed-kubernetes).
+* `segment` - (Required) Pool segment where all nodes of a cloud node group are located, for example, `ru-7a`. For a dedicated node group, the dedicated server location, for example, `SPB-3`. Changing this creates a new node group. Learn more about available pool segments in the [Availability matrix](https://docs.selectel.ru/en/control-panel-actions/availability-matrix/#managed-kubernetes).
 
-* `nodes_count` - (Optional) Number of worker nodes in the node group. Required unless `enable_autoscale` is `true`. Changing this resizes the node group. While autoscaling is enabled, the node count is managed by the autoscaler: its changes and changes of `nodes_count` in the configuration are ignored.
+* `nodes_count` - (Optional) Number of worker nodes in the node group. Required unless `enable_autoscale` is `true`, and always required for a dedicated node group. Changing this resizes the node group. While autoscaling is enabled, the node count is managed by the autoscaler: its changes and changes of `nodes_count` in the configuration are ignored.
 
-* `cloud_nodegroup_config` - (Required) Cloud server configuration of the nodes. Changing any of its values creates a new node group. Learn more about [Configurations](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/configurations/).
+* `cloud_nodegroup_config` - (Optional) Cloud server configuration of the nodes. Conflicts with `dedicated_nodegroup_config`. Changing any of its values creates a new node group. Learn more about [Configurations](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/configurations/).
 
   * `flavor_id` - (Optional) Unique identifier of an OpenStack flavor for all nodes. Conflicts with `cpus` and `ram_mb`. Set either `flavor_id`, or `cpus` and `ram_mb`. Learn more about [Flavors](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/configurations/#create-node-group-with-prebuilt-cloud-server-configuration).
 
@@ -44,7 +54,19 @@ The resource waits for the node group tasks of every operation. When a task fail
 
   * `affinity_policy` - (Optional) Affinity policy of the nodes. Available values are `soft-anti-affinity` and `soft-affinity`. If omitted, `soft-anti-affinity` is used.
 
-* `cidr` - (Optional) CIDR of the node group network. Applies to dedicated node groups only, which this resource does not support yet, so setting it fails the plan.
+* `dedicated_nodegroup_config` - (Optional) Dedicated server configuration of the nodes. Conflicts with `cloud_nodegroup_config`. Changing any of its values creates a new node group. A dedicated node group does not support autoscaling, so `enable_autoscale`, `autoscale_min_nodes` and `autoscale_max_nodes` cannot be set, and it cannot be preemptible.
+
+  * `service_uuid` - (Required) Unique identifier of the dedicated server configuration. Retrieved from the `configurations[].id` attribute of the [selectel_dedicated_configuration_v1](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/dedicated_configuration_v1) data source.
+
+  * `price_plan_name` - (Required) Name of the price plan of the servers. Available price plans are `1 day`, `1 month`, `3 months`, `6 months`, `12 months`, and `12 months • monthly payment`. The provider resolves the name to `price_plan_uuid` at plan, so an unknown name fails the plan. Learn more about price plans in the [Payment model and prices of a dedicated server](https://docs.selectel.ru/en/dedicated/about/payment).
+
+  * `root_size_gb` - (Optional) Size of the root partition of each server in GB, at least `30`. If omitted, `100` is used.
+
+  * `create_storage_partition` - (Optional) Creates a storage partition on the fastest disk of each server. Boolean flag, the default value is `true`.
+
+  * `currency` - (Optional) Balance that pays for the servers. Available values are `main` and `bonus`. If omitted, `main` is used.
+
+* `cidr` - (Optional) CIDR of the dedicated node group network, a private `/24` network, for example, `10.20.30.0/24`. Changing this creates a new node group. Applies to dedicated node groups only: setting it for a cloud node group fails the plan.
 
 * `labels` - (Optional) Kubernetes labels applied to each node in the node group. Changing this updates the nodes in place. Removing the `labels` argument keeps the current labels; set an empty map to remove them.
 
@@ -56,7 +78,7 @@ The resource waits for the node group tasks of every operation. When a task fail
 
   * `effect` - (Required) Taint effect. Available values are `NoSchedule`, `PreferNoSchedule`, and `NoExecute`.
 
-* `enable_autoscale` - (Optional) Enables or disables autoscaling of the node group. Boolean flag. Requires `autoscale_min_nodes` and `autoscale_max_nodes` when `true`. Learn more about [Autoscaling](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/cluster-autoscaler/).
+* `enable_autoscale` - (Optional) Enables or disables autoscaling of the node group. Boolean flag. Requires `autoscale_min_nodes` and `autoscale_max_nodes` when `true`. Cloud node groups only. Learn more about [Autoscaling](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/cluster-autoscaler/).
 
 * `autoscale_min_nodes` - (Optional) Minimum number of worker nodes while autoscaling is enabled.
 
@@ -64,17 +86,19 @@ The resource waits for the node group tasks of every operation. When a task fail
 
 * `user_data` - (Optional) Base64-encoded script that worker nodes run on the first boot. Changing this creates a new node group. Learn more about [User data](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/user-data/).
 
-* `install_nvidia_device_plugin` - (Optional) Enables or disables installation of the NVIDIA Device Plugin and GPU drivers. Changing this creates a new node group. If omitted, it is enabled for flavors with GPU. Cannot be `true` with `cpus` and `ram_mb`: set a GPU `flavor_id`.
+* `install_nvidia_device_plugin` - (Optional) Enables or disables installation of the NVIDIA Device Plugin and GPU drivers. Changing this creates a new node group. If omitted, it is enabled for flavors and dedicated servers with GPU. Cannot be `true` with `cpus` and `ram_mb`: set a GPU `flavor_id`.
 
-* `preemptible` - (Optional) Enables or disables the use of preemptible nodes. Changing this creates a new node group. Boolean flag, the default value is `false`. Learn more about [Preemptible node groups](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/preemptible-node-groups/).
+* `preemptible` - (Optional) Enables or disables the use of preemptible nodes. Changing this creates a new node group. Boolean flag, the default value is `false`. Cloud node groups only. Learn more about [Preemptible node groups](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/preemptible-node-groups/).
 
-* `timeouts` - (Optional) Timeouts of the `create`, `update` and `delete` operations, for example, `30m`. The default value of each is `60m`.
+* `timeouts` - (Optional) Timeouts of the `create`, `update` and `delete` operations, for example, `30m`. The default value of each is `60m`, except `create` of a dedicated node group, `160m`: ordering and installing the servers can take that long.
 
 ## Attributes Reference
 
 * `id` - Unique identifier of the node group in the `<cluster_id>/<nodegroup_id>` format.
 
-* `nodegroup_type` - Type of the node group, for example, `STANDARD` or `GPU`.
+* `nodegroup_type` - Type of the node group: `STANDARD`, `GPU`, `DEDICATED` or `DEDICATED_GPU`.
+
+* `dedicated_nodegroup_config.price_plan_uuid` - Unique identifier of the price plan that `price_plan_name` names.
 
 * `status` - Node group status as the API returns it.
 
@@ -139,4 +163,4 @@ where:
 
 The API does not return `cloud_nodegroup_config.cpus`, `ram_mb` and `affinity_policy` of a cloud node group, so they stay empty after import. Setting them in the configuration of the imported node group fills the state on the first apply after the import and does not create a new node group. Once that apply or the next one has run, setting a value still missing from the state creates a new node group.
 
-A dedicated node group cannot be imported into this resource yet: the import fails.
+Of a dedicated node group, the API does not return `currency`, so it stays empty after import. The import fills `price_plan_name` from the price plan of the node group.

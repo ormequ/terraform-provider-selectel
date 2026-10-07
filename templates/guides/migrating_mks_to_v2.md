@@ -55,7 +55,7 @@ Before you start, upgrade to a provider version that has the `_v2` resources and
 | `nodes_count` | `nodes_count` | |
 | `flavor_id`, `cpus`, `ram_mb`, `volume_gb`, `volume_type`, `local_volume`, `affinity_policy` | `cloud_nodegroup_config = { ... }` | The same names inside the nested attribute. |
 | `keypair_name` | — | Removed: API v2 ignores it. Remove it from the configuration. |
-| — | `cidr` | For dedicated node groups only, which `selectel_mks_nodegroup_v2` does not support yet: setting it fails the plan. Do not set it. |
+| — | `cidr` | For dedicated node groups only. A `_v1` node group is a cloud one, so setting it fails the plan. Do not set it. |
 | `labels` | `labels` | |
 | `taints { ... }` | `taints = [{ ... }]` | A list of objects instead of repeated blocks. |
 | `enable_autoscale`, `autoscale_min_nodes`, `autoscale_max_nodes` | the same | |

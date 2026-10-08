@@ -128,6 +128,11 @@ func TestMKSClusterV2MoveState(t *testing.T) {
 			want: func(*mksClusterV2Model) {},
 		},
 		{
+			name: "dashed upper-case project",
+			v1:   func(v map[string]any) { v["project_id"] = strings.ToUpper(testMKSV2APIProject) },
+			want: func(m *mksClusterV2Model) { m.ProjectID = types.StringValue(testMKSV2KeystoneProject) },
+		},
+		{
 			name: "only zonal true",
 			v1:   func(v map[string]any) { delete(v, "cluster_type"); v["zonal"] = true },
 			want: func(m *mksClusterV2Model) { m.ClusterType = types.StringValue("BASIC") },

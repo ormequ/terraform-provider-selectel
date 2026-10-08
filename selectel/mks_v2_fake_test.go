@@ -533,6 +533,9 @@ func (f *mksV2Fake) deleteCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// handlers/clusters/delete.go:188-190.
+	c.Status = "PENDING_DELETE"
+	f.clusters[id] = c
 	f.addTask(id, "DELETE_CLUSTER", func() { delete(f.clusters, id) })
 	w.WriteHeader(http.StatusNoContent)
 }

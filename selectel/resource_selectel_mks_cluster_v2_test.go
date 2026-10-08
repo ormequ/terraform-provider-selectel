@@ -272,6 +272,13 @@ func TestMKSClusterV2ResourceCreateUndeclaredStatus(t *testing.T) {
 		wantErr     string
 	}{
 		{
+			name:        "400 with the mk-api-v2 error",
+			status:      http.StatusBadRequest,
+			contentType: "application/json",
+			body:        `{"error":{"message":"invalid kube_version: 1.30.3"}}`,
+			wantErr:     `error creating cluster: 400 Bad Request: invalid kube_version: 1.30.3`,
+		},
+		{
 			name:        "403 with a JSON error",
 			status:      http.StatusForbidden,
 			contentType: "application/json",
@@ -1020,6 +1027,91 @@ func TestMKSClusterV2ResourceDeleteWaitsForStatus(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestMKSClusterV2ResourceUpdateTimeout(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+
+	config := func(featureGates string) string {
+		return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  kubernetes_options = {
+    feature_gates = [%s]
+  }
+  timeouts {
+    update = "1s"
+  }
+`, featureGates))
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: config(""),
+			},
+			{
+				PreConfig:   func() { fake.stickTasks("UPGRADE_MASTERS_CONFIG", true) },
+				Config:      config(`"TopologyAwareHints"`),
+				ExpectError: testMKSClusterV2Error(`Error updating cluster(?s:.*)context deadline exceeded`),
+			},
+			{
+				// The API stored the options before its task, so the refresh
+				// reads them and the plan is empty. The task ends on its own.
+				PreConfig: func() {
+					fake.stickTasks("UPGRADE_MASTERS_CONFIG", false)
+					fake.settleAfter(testMKSV2ClusterID, 1, "ACTIVE")
+				},
+				Config:   config(`"TopologyAwareHints"`),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+func TestMKSClusterV2ResourceDeleteTimeout(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+
+	config := testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  timeouts {
+    delete = "1s"
+  }
+`)
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy: resource.ComposeTestCheckFunc(
+			testMKSClusterV2Destroyed(fake),
+			// The second destroy waits for the first delete instead of
+			// sending another one, which the API would refuse with 409.
+			testMKSClusterV2Calls(fake, map[string]int{mksV2RouteDeleteCluster: 1}),
+		),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+			},
+			{
+				PreConfig:   func() { fake.stickTasks("DELETE_CLUSTER", true) },
+				Config:      config,
+				Destroy:     true,
+				ExpectError: testMKSClusterV2Error(`Error deleting cluster(?s:.*)context deadline exceeded`),
+			},
+			{
+				// The cluster stays in state, PENDING_DELETE, until the
+				// delete ends in the API.
+				PreConfig: func() { fake.settleAfter(testMKSV2ClusterID, 3, "") },
+				Config:    config,
+				Destroy:   true,
+			},
+		},
+	})
 }
 
 func TestMKSClusterV2ResourceX509OnCreate(t *testing.T) {

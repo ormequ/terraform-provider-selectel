@@ -916,6 +916,82 @@ func TestMKSNodegroupV2ResourceDeleteWaitsForStatus(t *testing.T) {
 	}
 }
 
+func TestMKSNodegroupV2ResourceUpdateTimeout(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+
+	config := func(label string) string {
+		return testMKSNodegroupV2Config(testMKSNodegroupV2Flavor + fmt.Sprintf(`
+  labels = { a = %q }
+  timeouts {
+    update = "1s"
+  }
+`, label))
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
+		Steps: []resource.TestStep{
+			{
+				Config: config("1"),
+			},
+			{
+				PreConfig:   func() { fake.stickTasks("UPDATE_NODEGROUP_LABELS", true) },
+				Config:      config("2"),
+				ExpectError: testMKSClusterV2Error(`Error updating node group(?s:.*)context deadline exceeded`),
+			},
+			{
+				// The fake applies labels only when their task is DONE, so
+				// the timed-out change is planned and applied again.
+				PreConfig: func() { fake.stickTasks("UPDATE_NODEGROUP_LABELS", false) },
+				Config:    config("2"),
+				Check:     resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "labels.a", "2"),
+			},
+		},
+	})
+}
+
+func TestMKSNodegroupV2ResourceDeleteTimeout(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+
+	config := testMKSNodegroupV2Config(testMKSNodegroupV2Flavor + `
+  timeouts {
+    delete = "1s"
+  }
+`)
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy: resource.ComposeTestCheckFunc(
+			testMKSNodegroupV2Destroyed(fake, "ng-1"),
+			// The second destroy waits for the first delete instead of
+			// sending another one, which the API would refuse with 409.
+			testMKSClusterV2Calls(fake, map[string]int{mksV2RouteDeleteNodegroup: 1}),
+		),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+			},
+			{
+				PreConfig:   func() { fake.stickTasks("CLUSTER_RESIZE", true) },
+				Config:      config,
+				Destroy:     true,
+				ExpectError: testMKSClusterV2Error(`Error deleting node group(?s:.*)context deadline exceeded`),
+			},
+			{
+				// The nodegroup stays in state, PENDING_DELETE, until the
+				// delete ends in the API.
+				PreConfig: func() { fake.settleAfter("ng-1", 3, "") },
+				Config:    config,
+				Destroy:   true,
+			},
+		},
+	})
+}
+
 func TestMKSNodegroupV2ResourceDeleteTaskError(t *testing.T) {
 	t.Parallel()
 	fake := newMKSV2Fake(t)

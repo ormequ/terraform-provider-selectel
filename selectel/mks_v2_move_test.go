@@ -514,10 +514,38 @@ func TestMKSClusterV2ResourceMovedFromV1(t *testing.T) {
 		// configName and configVersion are the _v2 configuration. The
 		// upper-case case covers the plain move as well.
 		configName, configVersion string
+		// oidc is the cluster OIDC, which the _v1 state stores as well;
+		// configOIDC is the _v2 oidc object body, none when empty.
+		oidc       mksclient.OIDC
+		configOIDC string
 	}{
 		{name: "patch auto-upgraded past the configuration", version: "1.30.5", configName: "tf-v2", configVersion: "1.30.3"},
 		{name: "lower minor configured", version: "1.30.5", configName: "tf-v2", configVersion: "1.29.8"},
 		{name: "upper-case name configured", version: "1.30.3", configName: "TF-v2", configVersion: "1.30.3"},
+		{
+			name: "OIDC disabled in the configuration", version: "1.30.3", configName: "tf-v2", configVersion: "1.30.3",
+			configOIDC: `
+      enabled = false`,
+		},
+		{
+			// mk-api V1 stores the same claim defaults as mk-api-v2.
+			name: "OIDC enabled with the claims omitted", version: "1.30.3", configName: "tf-v2", configVersion: "1.30.3",
+			oidc: mksclient.OIDC{
+				Enabled: true, ProviderName: "keycloak", IssuerUrl: "https://issuer.example.com", ClientId: "kubernetes",
+				UsernameClaim: "sub", GroupsClaim: "groups",
+			},
+			configOIDC: testMKSClusterV2EnabledOIDC,
+		},
+		{
+			name: "OIDC enabled with the claims configured", version: "1.30.3", configName: "tf-v2", configVersion: "1.30.3",
+			oidc: mksclient.OIDC{
+				Enabled: true, ProviderName: "keycloak", IssuerUrl: "https://issuer.example.com", ClientId: "kubernetes",
+				UsernameClaim: "email", GroupsClaim: "roles",
+			},
+			configOIDC: testMKSClusterV2EnabledOIDC + `
+      username_claim = "email"
+      groups_claim   = "roles"`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -533,11 +561,12 @@ func TestMKSClusterV2ResourceMovedFromV1(t *testing.T) {
 				CniType: mksclient.ClusterDetailedCniType(mksclient.ClusterCniTypeCALICO), KubeApiIp: "192.0.2.10", Status: "ACTIVE",
 				KubernetesOptions: mksclient.KubernetesOptions{
 					FeatureGates: []string{"TopologyAwareHints"}, AuditLogs: mksclient.AuditLogs{Enabled: true},
+					Oidc: tt.oidc,
 				},
 			}, "")
 
 			// The state _v1 left after a refresh of that cluster: zonal and
-			// no cluster_type, an OIDC block for a disabled OIDC.
+			// no cluster_type, an OIDC block like the cluster one.
 			v1 := map[string]any{
 				"name": "tf-v2", "project_id": testMKSV2KeystoneProject, "region": testMKSV2Pool, "kube_version": tt.version,
 				"enable_autorepair": true, "enable_patch_version_auto_upgrade": true, "enable_pod_security_policy": false,
@@ -545,6 +574,16 @@ func TestMKSClusterV2ResourceMovedFromV1(t *testing.T) {
 				"zonal": false, "kube_api_ip": "192.0.2.10", "status": "ACTIVE", "feature_gates": []any{"TopologyAwareHints"},
 				"admission_controllers": []any{}, "private_kube_api": false, "cni_type": "CALICO", "enable_audit_logs": true,
 				"oidc": []any{map[string]any{"enabled": false}},
+			}
+			if tt.oidc.Enabled {
+				v1["oidc"] = []any{map[string]any{
+					"enabled": true, "provider_name": tt.oidc.ProviderName, "issuer_url": tt.oidc.IssuerUrl,
+					"client_id": tt.oidc.ClientId, "username_claim": tt.oidc.UsernameClaim, "groups_claim": tt.oidc.GroupsClaim,
+				}}
+			}
+			oidcConfig := ""
+			if tt.configOIDC != "" {
+				oidcConfig = "    oidc = {" + tt.configOIDC + "\n    }\n"
 			}
 			seedState := testMKSV2SeedV1State(t, "selectel_mks_cluster_v1", "cluster_tf_test_1",
 				testMKSV1StateJSON(t, resourceMKSClusterV1(), testMKSV2ClusterID, v1))
@@ -563,8 +602,8 @@ moved {
     audit_logs = {
       enabled = true
     }
-  }
-`, tt.configVersion)), `name = "tf-v2"`, fmt.Sprintf(`name = %q`, tt.configName), 1)
+%s  }
+`, tt.configVersion, oidcConfig)), `name = "tf-v2"`, fmt.Sprintf(`name = %q`, tt.configName), 1)
 
 			resource.UnitTest(t, resource.TestCase{
 				ProtoV6ProviderFactories: fake.providerFactories(),

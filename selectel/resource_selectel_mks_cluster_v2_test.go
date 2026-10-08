@@ -1149,6 +1149,12 @@ func TestMKSClusterV2ResourceOIDCCACertsWhitespace(t *testing.T) {
 					stored("cert-2"),
 				),
 			},
+			{
+				// Like an import, where the state has the API value: a change of
+				// only the whitespace plans nothing.
+				Config:   config("cert-2"),
+				PlanOnly: true,
+			},
 		},
 	})
 }
@@ -1266,6 +1272,54 @@ func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
       groups_claim   = ""
       ca_certs       = ""`),
 				Check: cleared,
+			},
+			{
+				// Re-enabling with the empty claims kept would never converge:
+				// the API stores the defaults instead.
+				Config: testMKSClusterV2OIDCConfig(testMKSClusterV2EnabledOIDC + `
+      username_claim = ""
+      groups_claim   = ""`),
+				ExpectError: testMKSClusterV2Error("(?s)Empty OIDC claim while OIDC is enabled.*(username|groups)_claim cannot be empty while OIDC is enabled: omit it to get `(sub|groups)`"),
+			},
+			{
+				Config: testMKSClusterV2OIDCConfig(testMKSClusterV2EnabledOIDC),
+				Check: testMKSClusterV2OIDCSent(t, fake, mksV2RoutePatchCluster, map[string]any{
+					"enabled": true, "provider_name": "keycloak", "issuer_url": "https://issuer.example.com",
+					"client_id": "kubernetes", "username_claim": "sub", "groups_claim": "groups",
+				}),
+			},
+		},
+	})
+}
+
+func TestMKSClusterV2ResourceOIDCUnknownWhileDisabled(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: testMKSClusterV2OIDCConfig(testMKSClusterV2EnabledOIDC),
+			},
+			{
+				// issuer_url is unknown until terraform_data is created, so the
+				// plan keeps it unknown and the apply-time plan clears it.
+				Config: testMKSClusterV2OIDCConfig(`
+      enabled    = false
+      issuer_url = terraform_data.empty.output`) + `
+resource "terraform_data" "empty" {
+  input = ""
+}
+`,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.enabled", "false"),
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.issuer_url", ""),
+					testMKSClusterV2OIDCSent(t, fake, mksV2RoutePatchCluster, map[string]any{
+						"enabled": false, "provider_name": "", "issuer_url": "", "client_id": "", "username_claim": "", "groups_claim": "",
+					}),
+				),
 			},
 		},
 	})

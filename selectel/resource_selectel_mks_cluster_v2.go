@@ -326,7 +326,7 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 						Optional: true,
 						Computed: true,
 						Description: "Connection of an OpenID Connect (OIDC) provider to the cluster. " +
-							"Disabling OIDC clears its settings, so with `enabled = false` the other arguments must be omitted or empty.",
+							"Disabling OIDC clears its settings, so with `enabled = false` omit the other arguments; a non-empty one fails the plan.",
 						PlanModifiers: keepObject,
 						Attributes: map[string]schema.Attribute{
 							"enabled": optionalBool("Enables authentication with OIDC."),
@@ -335,16 +335,16 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 							"issuer_url": oidcParam("URL of the OIDC provider. It must start with `https://`.", ""),
 							"client_id":  oidcParam("Client ID that all tokens must be issued for.", ""),
 							"username_claim": oidcParam("JWT claim to use as the username. "+
-								"When OIDC is enabled and the argument is omitted, the API sets `sub`.", mksClusterV2OIDCUsernameClaim),
+								"When OIDC is enabled, omit it to get `sub`; an empty value fails the plan.", mksClusterV2OIDCUsernameClaim),
 							"groups_claim": oidcParam("JWT claim to use as the user's group. "+
-								"When OIDC is enabled and the argument is omitted, the API sets `groups`.", mksClusterV2OIDCGroupsClaim),
+								"When OIDC is enabled, omit it to get `groups`; an empty value fails the plan.", mksClusterV2OIDCGroupsClaim),
 							"ca_certs": schema.StringAttribute{
 								Optional:   true,
 								Computed:   true,
 								CustomType: mksV2TrimmedStringType{},
 								Description: "CA certificates of the OIDC provider in the PEM format. " +
 									"Leading and trailing whitespace is ignored.",
-								PlanModifiers: append(slices.Clone(keepString), mksClusterV2OIDCParam{}),
+								PlanModifiers: append(slices.Clone(keepString), mksV2TrimmedStringKeep{}, mksClusterV2OIDCParam{}),
 							},
 						},
 					},
@@ -1317,22 +1317,62 @@ func (m mksClusterV2OIDCParam) PlanModifyString(ctx context.Context, req planmod
 		return
 	}
 
+	if req.ConfigValue.IsUnknown() {
+		// The plan must keep an unknown configured value; the apply-time plan
+		// sees the known one.
+		return
+	}
+
 	if enabled {
-		if req.ConfigValue.IsNull() && m.enabledDefault != "" {
+		if m.enabledDefault == "" {
+			return
+		}
+		if req.ConfigValue.IsNull() {
 			resp.PlanValue = types.StringValue(m.enabledDefault)
+
+			return
+		}
+		if req.ConfigValue.ValueString() == "" {
+			// The API would store the default instead, and the plan cannot
+			// differ from the configured "".
+			name, _ := req.Path.Steps().LastStep()
+			resp.Diagnostics.AddAttributeError(req.Path, "Empty OIDC claim while OIDC is enabled",
+				fmt.Sprintf("%s cannot be empty while OIDC is enabled: omit it to get `%s`.", name, m.enabledDefault))
 		}
 
 		return
 	}
 
-	if !req.ConfigValue.IsNull() && !req.ConfigValue.IsUnknown() && req.ConfigValue.ValueString() != "" {
+	if !req.ConfigValue.IsNull() && req.ConfigValue.ValueString() != "" {
 		resp.Diagnostics.AddAttributeError(req.Path, "OIDC parameter set while OIDC is disabled",
 			fmt.Sprintf("The API rejects it: oidc parameters cannot be configured when it is disabled. "+
-				"Disabling OIDC clears its settings, so remove %s or set it to \"\".", req.Path))
+				"Disabling OIDC clears its settings, so remove %s.", req.Path))
 
 		return
 	}
 	resp.PlanValue = types.StringValue("")
+}
+
+// mksV2TrimmedStringKeep plans the state value when the configured one
+// differs from it only in surrounding whitespace: semantic equality covers
+// apply and read results, but not the plan, e.g. after an import.
+type mksV2TrimmedStringKeep struct{}
+
+func (m mksV2TrimmedStringKeep) Description(_ context.Context) string {
+	return "A change of only the surrounding whitespace keeps the state value."
+}
+
+func (m mksV2TrimmedStringKeep) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m mksV2TrimmedStringKeep) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.StateValue.IsNull() || req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if strings.TrimSpace(req.ConfigValue.ValueString()) == strings.TrimSpace(req.StateValue.ValueString()) {
+		resp.PlanValue = req.StateValue
+	}
 }
 
 // mksClusterV2OIDCEnabled is the planned oidc.enabled: the configured value,

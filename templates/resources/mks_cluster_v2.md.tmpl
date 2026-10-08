@@ -32,6 +32,8 @@ The resource waits for the cluster tasks of every operation. When a task fails, 
 
   To upgrade a minor version, set the next minor version. Minor versions are upgraded one at a time.
 
+  A minor version upgrade needs more than one worker node in the cluster. If a node group has to grow first, resize it in a separate apply: when one apply changes both `nodes_count` and `kube_version`, Terraform updates the cluster before the node group that depends on it, so the upgrade starts before the resize and fails.
+
   A downgrade or a skipped minor version fails at plan. While patch auto-upgrade moves the cluster to a newer patch version of the configured minor version, the configured version stays in the state.
 
 * `workers_type` - (Required) Type of the worker nodes the cluster accepts. Changing this creates a new cluster with all its node groups. Available values are:

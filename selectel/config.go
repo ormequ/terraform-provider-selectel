@@ -34,27 +34,27 @@ type Config struct {
 }
 
 func getConfig(d *schema.ResourceData, userAgent string) (*Config, diag.Diagnostics) {
-	return newConfig(userAgent, func(key string) string { return d.Get(key).(string) }), nil
-}
-
-// newConfig builds the Config once per process. The SDKv2 and the framework
-// provider both call it, so they share one Config and its clients cache.
-func newConfig(userAgent string, attr func(key string) string) *Config {
 	once.Do(func() {
 		cfgSingletone = &Config{
-			Username:       attr("username"),
-			Password:       attr("password"),
-			DomainName:     attr("domain_name"),
-			AuthURL:        attr("auth_url"),
-			AuthRegion:     attr("auth_region"),
-			UserDomainName: attr("user_domain_name"),
-			ProjectID:      attr("project_id"),
-			Region:         attr("region"),
-			UserAgent:      userAgent,
+			Username:   d.Get("username").(string),
+			Password:   d.Get("password").(string),
+			DomainName: d.Get("domain_name").(string),
+			AuthURL:    d.Get("auth_url").(string),
+			AuthRegion: d.Get("auth_region").(string),
+			UserAgent:  userAgent,
+		}
+		if v, ok := d.GetOk("user_domain_name"); ok {
+			cfgSingletone.UserDomainName = v.(string)
+		}
+		if v, ok := d.GetOk("project_id"); ok {
+			cfgSingletone.ProjectID = v.(string)
+		}
+		if v, ok := d.GetOk("region"); ok {
+			cfgSingletone.Region = v.(string)
 		}
 	})
 
-	return cfgSingletone
+	return cfgSingletone, nil
 }
 
 func (c *Config) GetSelVPCClient() (*selvpcclient.Client, error) {

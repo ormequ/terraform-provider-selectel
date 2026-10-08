@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
@@ -131,6 +132,17 @@ func TestFrameworkProviderSharesConfig(t *testing.T) {
 	var username string
 	require.NoError(t, attrs["username"].As(&username))
 	assert.Equal(t, os.Getenv("OS_USERNAME"), username)
+}
+
+func TestFrameworkProviderConfigureWithoutSDK(t *testing.T) {
+	p := &frameworkProvider{sdk: Provider("test"), version: "test"}
+	resp := &provider.ConfigureResponse{}
+
+	p.Configure(context.Background(), provider.ConfigureRequest{}, resp)
+
+	assert.True(t, resp.Diagnostics.HasError())
+	assert.Nil(t, resp.ResourceData)
+	assert.Nil(t, resp.DataSourceData)
 }
 
 // nullConfig is a configuration that sets none of the schema's attributes.

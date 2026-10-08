@@ -18,9 +18,12 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	dedicated "github.com/selectel/dedicated-go/v2/pkg/v2"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
+	"github.com/terraform-providers/terraform-provider-selectel/version"
 )
 
 // mksV2Fake is an in-memory mk-api-v2 behind httptest.Server. Tests seed it,
@@ -179,8 +182,17 @@ func (f *mksV2Fake) providerFactories() map[string]func() (tfprotov6.ProviderSer
 	return map[string]func() (tfprotov6.ProviderServer, error){
 		"selectel": func() (tfprotov6.ProviderServer, error) {
 			sdk := Provider("test")
+			// The framework provider takes its Config from the SDKv2 one, so a
+			// per-test Config replaces the SDKv2 configure step.
+			sdk.ConfigureContextFunc = func(_ context.Context, d *schema.ResourceData) (any, diag.Diagnostics) {
+				return f.config(sdk.UserAgent(version.ProviderName, "test"), func(key string) string {
+					v, _ := d.Get(key).(string)
+
+					return v
+				}), nil
+			}
 			server, err := muxProviderServer(context.Background(), sdk, testFrameworkProvider{&frameworkProvider{
-				sdk: sdk, version: "test", configFn: f.config,
+				sdk: sdk, version: "test",
 			}})
 			if err != nil {
 				return nil, err
@@ -191,7 +203,7 @@ func (f *mksV2Fake) providerFactories() map[string]func() (tfprotov6.ProviderSer
 	}
 }
 
-// config builds the provider Config like newConfig, but for this test only.
+// config builds the provider Config like getConfig, but for this test only.
 func (f *mksV2Fake) config(userAgent string, attr func(key string) string) *Config {
 	f.mu.Lock()
 	defer f.mu.Unlock()

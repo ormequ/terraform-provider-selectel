@@ -475,8 +475,9 @@ type mksV2Status struct {
 
 // mksV2WaitDeletable polls get until every status is one the delete takes,
 // so a delete right after an interrupted create waits for the create to end
-// instead of failing with 409. ERROR never changes on its own: it ends the
-// wait, and the delete answers for it.
+// instead of failing with 409. ERROR never changes on its own: where the
+// delete does not take it, it ends the wait, and the delete answers for it.
+// An accepted ERROR, e.g. of a nodegroup, still waits for the other objects.
 func mksV2WaitDeletable(ctx context.Context, get func() ([]mksV2Status, error)) error {
 	var unsettled []string
 	err := mksV2Poll(ctx, func() (bool, error) {
@@ -487,10 +488,10 @@ func mksV2WaitDeletable(ctx context.Context, get func() ([]mksV2Status, error)) 
 
 		unsettled = unsettled[:0]
 		for _, s := range statuses {
-			if s.status == "ERROR" {
-				return true, nil
-			}
 			if !slices.Contains(s.accepted, s.status) {
+				if s.status == "ERROR" {
+					return true, nil
+				}
 				unsettled = append(unsettled, s.object+" status "+s.status)
 			}
 		}

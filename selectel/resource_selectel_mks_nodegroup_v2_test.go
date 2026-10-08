@@ -847,6 +847,12 @@ func TestMKSNodegroupV2ResourceDeleteWaitsForStatus(t *testing.T) {
 		{name: "nodegroup pending create ends", nodegroupStatus: "PENDING_CREATE", settleID: "ng-1", settle: "ACTIVE", wantDeletes: 1},
 		{name: "cluster pending upgrade ends", clusterStatus: "PENDING_UPGRADE", settleID: testMKSV2ClusterID, settle: "ACTIVE", wantDeletes: 1},
 		{name: "nodegroup error deletes at once", nodegroupStatus: "ERROR", wantDeletes: 1},
+		{
+			name:          "nodegroup error waits for a pending cluster",
+			clusterStatus: "PENDING_UPGRADE", nodegroupStatus: "ERROR",
+			settleID: testMKSV2ClusterID, settle: "ACTIVE",
+			wantDeletes: 1,
+		},
 		{name: "nodegroup gone while waiting", nodegroupStatus: "PENDING_SCALE_UP", settleID: "ng-1"},
 		{
 			name:          "cluster error is left to the API",

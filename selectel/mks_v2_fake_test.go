@@ -43,6 +43,9 @@ type mksV2Fake struct {
 	admissionControllers []mksclient.AvailableAdmissionControllers
 	// failures maps a route pattern to the HTTP status it answers with.
 	failures map[string]int
+	// failureBodies maps a route pattern to the raw body its forced failure
+	// answers with instead of the mk-api-v2 error.
+	failureBodies map[string]mksV2FakeBody
 	// callFailures maps a route pattern and a call number to the HTTP status
 	// that call answers with.
 	callFailures map[string]map[int]int
@@ -76,6 +79,12 @@ type mksV2Fake struct {
 
 // mksV2FakeTask finishes on its first GET, unless stuck, and then applies
 // effect when it is DONE.
+// mksV2FakeBody is a raw response body and its content type.
+type mksV2FakeBody struct {
+	contentType string
+	body        string
+}
+
 type mksV2FakeTask struct {
 	task   mksclient.Task
 	stuck  bool
@@ -127,6 +136,8 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 		nodegroups:  map[string]mksclient.NodegroupDetailed{},
 		kubeconfigs: map[string]string{},
 		failures:    map[string]int{},
+
+		failureBodies: map[string]mksV2FakeBody{},
 
 		callFailures: map[string]map[int]int{},
 
@@ -243,6 +254,13 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 		status, ok := f.failures[pattern]
 		if !ok {
 			status, ok = f.callFailures[pattern][f.calls[pattern]]
+		}
+		if raw, hasBody := f.failureBodies[pattern]; ok && hasBody {
+			w.Header().Set("Content-Type", raw.contentType)
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, raw.body)
+
+			return
 		}
 		if ok {
 			objectType, id := mksV2FakeObject(r)
@@ -701,12 +719,24 @@ func (f *mksV2Fake) fail(pattern string, status int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	delete(f.failureBodies, pattern)
 	if status == 0 {
 		delete(f.failures, pattern)
 
 		return
 	}
 	f.failures[pattern] = status
+}
+
+// failWithBody makes the route answer with status and the raw body until the
+// test ends, like a gateway or a status the mk-api-v2 swagger does not declare.
+func (f *mksV2Fake) failWithBody(pattern string, status int, contentType, body string) {
+	f.fail(pattern, status)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.failureBodies[pattern] = mksV2FakeBody{contentType: contentType, body: body}
 }
 
 // failCalls makes the given calls of the route, counted from 1 over the whole

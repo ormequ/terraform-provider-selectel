@@ -1209,6 +1209,25 @@ func TestMKSNodegroupV2ResourceCreateErrorAfterStore(t *testing.T) {
 	})
 }
 
+func TestMKSNodegroupV2ResourceCreateUndeclaredStatus(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+	// The mk-api-v2 swagger does not declare 403 for the create.
+	fake.failWithBody(mksV2RouteCreateNodegroups, http.StatusForbidden, "application/json",
+		`{"error":{"message":"access denied for the project"}}`)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config:      testMKSNodegroupV2Config(testMKSNodegroupV2Flavor),
+				ExpectError: testMKSClusterV2Error(`error creating nodegroup: 403 Forbidden: access denied for the project`),
+			},
+		},
+	})
+}
+
 func TestMKSNodegroupV2ResourceFlavorReplacesVolume(t *testing.T) {
 	t.Parallel()
 

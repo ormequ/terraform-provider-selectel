@@ -161,6 +161,56 @@ func TestMKSClusterV2ResourceCreateTaskError(t *testing.T) {
 	})
 }
 
+func TestMKSClusterV2ResourceCreateUndeclaredStatus(t *testing.T) {
+	t.Parallel()
+	// The mk-api-v2 swagger declares only 500 for the create, so these
+	// statuses reach the provider as the raw body.
+	tests := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		wantErr     string
+	}{
+		{
+			name:        "403 with a JSON error",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"error":{"message":"access denied for the project"}}`,
+			wantErr:     `error creating cluster: 403 Forbidden: access denied for the project`,
+		},
+		{
+			name:        "422 with plain text",
+			status:      http.StatusUnprocessableEntity,
+			contentType: "text/plain",
+			body:        "kube_version 1.30.3 is not supported\n",
+			wantErr:     `error creating cluster: 422 Unprocessable Entity: kube_version 1.30.3 is not supported`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+			fake.failWithBody(mksV2RouteCreateCluster, tt.status, tt.contentType, tt.body)
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy:             testMKSClusterV2Destroyed(fake),
+				Steps: []resource.TestStep{
+					{
+						Config: testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+`),
+						ExpectError: testMKSClusterV2Error(regexp.QuoteMeta(tt.wantErr)),
+					},
+				},
+			})
+		})
+	}
+}
+
 func TestMKSClusterV2ResourceKubernetesOptionsSentWhole(t *testing.T) {
 	t.Parallel()
 	fake := newMKSV2Fake(t)

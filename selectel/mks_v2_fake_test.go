@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -359,7 +360,12 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	if opts.KubernetesOptions != nil {
 		c.KubernetesOptions = *opts.KubernetesOptions
-		c.KubernetesOptions.Oidc = normaliseMKSV2FakeOIDC(c.KubernetesOptions.Oidc)
+		c.KubernetesOptions.Oidc, err = normaliseMKSV2FakeOIDC(c.KubernetesOptions.Oidc)
+		if err != nil {
+			writeMKSV2BadRequest(w, err)
+
+			return
+		}
 		// Create ignores them, see mk-api-v2 protoadapter/create_cluster.go.
 		c.KubernetesOptions.X509CaCertificates = ""
 	}
@@ -402,9 +408,17 @@ func (f *mksV2Fake) patchCluster(w http.ResponseWriter, r *http.Request) {
 		c.Status = "PENDING_UPGRADE_CLUSTER_CONFIG"
 		f.addTask(id, "UPGRADE_CLUSTER_CONFIG", f.activateCluster(id))
 	}
-	if opts.KubernetesOptions != nil && f.patchKubeOptions(&c, *opts.KubernetesOptions) {
-		c.Status = "PENDING_UPGRADE_CLUSTER_CONFIG"
-		f.addTask(id, "UPGRADE_MASTERS_CONFIG", f.activateCluster(id))
+	if opts.KubernetesOptions != nil {
+		changed, err := f.patchKubeOptions(&c, *opts.KubernetesOptions)
+		if err != nil {
+			writeMKSV2BadRequest(w, err)
+
+			return
+		}
+		if changed {
+			c.Status = "PENDING_UPGRADE_CLUSTER_CONFIG"
+			f.addTask(id, "UPGRADE_MASTERS_CONFIG", f.activateCluster(id))
+		}
 	}
 	f.clusters[id] = c
 
@@ -414,9 +428,13 @@ func (f *mksV2Fake) patchCluster(w http.ResponseWriter, r *http.Request) {
 // patchKubeOptions stores the changed options the way the API does and
 // reports whether anything changed: audit_logs only with enabled, OIDC only
 // with a field other than provider_name, x509 whenever it is not empty.
-func (f *mksV2Fake) patchKubeOptions(c *mksclient.ClusterDetailed, requested mksclient.KubernetesOptions) bool {
+func (f *mksV2Fake) patchKubeOptions(c *mksclient.ClusterDetailed, requested mksclient.KubernetesOptions) (bool, error) {
 	current := &c.KubernetesOptions
-	requested.Oidc = normaliseMKSV2FakeOIDC(requested.Oidc)
+	var err error
+	requested.Oidc, err = normaliseMKSV2FakeOIDC(requested.Oidc)
+	if err != nil {
+		return false, err
+	}
 	changed := false
 
 	if !slices.Equal(current.FeatureGates, requested.FeatureGates) {
@@ -442,18 +460,29 @@ func (f *mksV2Fake) patchKubeOptions(c *mksclient.ClusterDetailed, requested mks
 		changed = true
 	}
 
-	return changed
+	return changed, nil
 }
 
-// normaliseMKSV2FakeOIDC stores OIDC like mk-api-v2 daladapter/
-// kubernetes_options.go: ca_certs trimmed, a disabled OIDC wiped.
-func normaliseMKSV2FakeOIDC(oidc mksclient.OIDC) mksclient.OIDC {
+// errMKSV2FakeOIDCDisabled is mk-api-v2 domain.ErrorOIDCParamsRequiredEnabling.
+var errMKSV2FakeOIDCDisabled = errors.New("oidc parameters cannot be configured when it is disabled")
+
+// normaliseMKSV2FakeOIDC validates and stores OIDC like mk-api-v2: a disabled
+// OIDC with any parameter is rejected (validate/oidc.go), an enabled one gets
+// the claim defaults (validate/cluster.go), ca_certs is trimmed and a
+// disabled OIDC is stored empty (daladapter/kubernetes_options.go).
+func normaliseMKSV2FakeOIDC(oidc mksclient.OIDC) (mksclient.OIDC, error) {
 	if !oidc.Enabled {
-		return mksclient.OIDC{}
+		if oidc != (mksclient.OIDC{}) {
+			return mksclient.OIDC{}, errMKSV2FakeOIDCDisabled
+		}
+
+		return mksclient.OIDC{}, nil
 	}
+	oidc.UsernameClaim = cmp.Or(oidc.UsernameClaim, "sub")
+	oidc.GroupsClaim = cmp.Or(oidc.GroupsClaim, "groups")
 	oidc.CaCerts = strings.TrimSpace(oidc.CaCerts)
 
-	return oidc
+	return oidc, nil
 }
 
 // activateCluster is the effect of a finished cluster task.
@@ -870,6 +899,13 @@ func writeMKSV2Error(w http.ResponseWriter, status int, objectType, id string) {
 	var body mksclient.GenericError
 	body.Error.Message = fmt.Sprintf("fake error %d", status)
 	writeMKSV2JSON(w, status, body)
+}
+
+// writeMKSV2BadRequest answers a rejected request body with the API message.
+func writeMKSV2BadRequest(w http.ResponseWriter, err error) {
+	var body mksclient.GenericError
+	body.Error.Message = err.Error()
+	writeMKSV2JSON(w, http.StatusBadRequest, body)
 }
 
 // listNodegroups lists the nodegroups of the cluster.

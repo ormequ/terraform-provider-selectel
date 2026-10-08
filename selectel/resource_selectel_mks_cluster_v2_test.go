@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -78,8 +79,14 @@ func TestMKSClusterV2ResourceBasic(t *testing.T) {
 					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.audit_logs.enabled", "false"),
 					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.enabled", "true"),
 					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.provider_name", "keycloak"),
-					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.username_claim", ""),
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.username_claim", "sub"),
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.groups_claim", "groups"),
 					resource.TestCheckNoResourceAttr(testMKSClusterV2Name, "basic"),
+					// The omitted claims are planned and sent as the API defaults.
+					testMKSClusterV2OIDCSent(t, fake, mksV2RouteCreateCluster, map[string]any{
+						"enabled": true, "provider_name": "keycloak", "issuer_url": "https://issuer.example.com",
+						"client_id": "kubernetes", "username_claim": "sub", "groups_claim": "groups",
+					}),
 					func(_ *terraform.State) error {
 						body := fake.lastBody(t, mksV2RouteCreateCluster)
 						return testMKSClusterV2BodyFields(body, map[string]any{
@@ -1146,25 +1153,22 @@ func TestMKSClusterV2ResourceOIDCCACertsWhitespace(t *testing.T) {
 	})
 }
 
-func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
+func TestMKSClusterV2ResourceOIDCClaimDefaults(t *testing.T) {
 	t.Parallel()
 	fake := newMKSV2Fake(t)
 
-	config := func(enabled bool) string {
-		return testMKSClusterV2Config("", fmt.Sprintf(`
-  project_id   = "attribute-project"
-  kube_version = "1.30.3"
-  workers_type = "CLOUD"
-  kubernetes_options = {
-    oidc = {
-      enabled       = %t
-      provider_name = "keycloak"
-      issuer_url    = "https://issuer.example.com"
-      client_id     = "kubernetes"
-      ca_certs      = "cert"
-    }
-  }
-`, enabled))
+	enabled := func(claims string) string {
+		return testMKSClusterV2OIDCConfig(testMKSClusterV2EnabledOIDC + claims)
+	}
+	claims := func(route, username, groups string) resource.TestCheckFunc {
+		return resource.ComposeTestCheckFunc(
+			resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.username_claim", username),
+			resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.groups_claim", groups),
+			testMKSClusterV2OIDCSent(t, fake, route, map[string]any{
+				"enabled": true, "provider_name": "keycloak", "issuer_url": "https://issuer.example.com",
+				"client_id": "kubernetes", "username_claim": username, "groups_claim": groups,
+			}),
+		)
 	}
 
 	resource.UnitTest(t, resource.TestCase{
@@ -1172,39 +1176,138 @@ func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
 		CheckDestroy:             testMKSClusterV2Destroyed(fake),
 		Steps: []resource.TestStep{
 			{
-				Config: config(true),
+				Config: testMKSClusterV2OIDCConfig(`
+      enabled = false`),
 			},
 			{
-				// The fields stay in the configuration; the API wipes them.
-				Config: config(false),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.enabled", "false"),
-					func(_ *terraform.State) error {
-						var got mksclient.OIDC
-						fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { got = c.KubernetesOptions.Oidc })
-						if got != (mksclient.OIDC{}) {
-							return fmt.Errorf("the API kept OIDC %+v, want it wiped", got)
-						}
-
-						return nil
-					},
-				),
+				// Enabling it with the claims omitted plans the API defaults,
+				// so the apply is consistent with what the API stores.
+				Config: enabled(""),
+				Check:  claims(mksV2RoutePatchCluster, "sub", "groups"),
 			},
 			{
-				// Enabling it again sends the fields from the configuration.
-				Config: config(true),
-				Check: func(_ *terraform.State) error {
-					var got mksclient.OIDC
-					fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { got = c.KubernetesOptions.Oidc })
-					if !got.Enabled || got.IssuerUrl != "https://issuer.example.com" || got.CaCerts != "cert" {
-						return fmt.Errorf("the API got OIDC %+v, want it enabled with the configured fields", got)
-					}
-
-					return nil
-				},
+				Config: enabled(`
+      username_claim = "email"
+      groups_claim   = "roles"`),
+				Check: claims(mksV2RoutePatchCluster, "email", "roles"),
+			},
+			{
+				// Removing the configured claims returns them to the defaults.
+				Config: enabled(""),
+				Check:  claims(mksV2RoutePatchCluster, "sub", "groups"),
 			},
 		},
 	})
+}
+
+func TestMKSClusterV2ResourceOIDCDisable(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+
+	enabledOIDC := testMKSClusterV2EnabledOIDC + `
+      ca_certs      = "cert"`
+	disabledSent := map[string]any{
+		"enabled": false, "provider_name": "", "issuer_url": "", "client_id": "", "username_claim": "", "groups_claim": "",
+	}
+	cleared := resource.ComposeTestCheckFunc(
+		resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.enabled", "false"),
+		resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.provider_name", ""),
+		resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.issuer_url", ""),
+		resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.client_id", ""),
+		resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.username_claim", ""),
+		resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.groups_claim", ""),
+		resource.TestCheckResourceAttr(testMKSClusterV2Name, "kubernetes_options.oidc.ca_certs", ""),
+		testMKSClusterV2OIDCSent(t, fake, mksV2RoutePatchCluster, disabledSent),
+		func(_ *terraform.State) error {
+			var got mksclient.OIDC
+			fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { got = c.KubernetesOptions.Oidc })
+			if got != (mksclient.OIDC{}) {
+				return fmt.Errorf("the API kept OIDC %+v, want it cleared", got)
+			}
+
+			return nil
+		},
+	)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config: testMKSClusterV2OIDCConfig(enabledOIDC),
+			},
+			{
+				// The state still holds the parameters, but the PATCH sends
+				// them empty, which is the only form the API accepts.
+				Config: testMKSClusterV2OIDCConfig(`
+      enabled = false`),
+				Check: cleared,
+			},
+			{
+				// Enabling it again sends the configured parameters.
+				Config: testMKSClusterV2OIDCConfig(enabledOIDC),
+				Check: testMKSClusterV2OIDCSent(t, fake, mksV2RoutePatchCluster, map[string]any{
+					"enabled": true, "provider_name": "keycloak", "issuer_url": "https://issuer.example.com",
+					"client_id": "kubernetes", "username_claim": "sub", "groups_claim": "groups", "ca_certs": "cert",
+				}),
+			},
+			{
+				Config:      testMKSClusterV2OIDCConfig(strings.Replace(enabledOIDC, "true", "false", 1)),
+				ExpectError: testMKSClusterV2Error(`(?s)OIDC parameter set while OIDC is disabled.*oidc parameters cannot be configured when it is disabled`),
+			},
+			{
+				// Empty parameters are no parameters to the API.
+				Config: testMKSClusterV2OIDCConfig(`
+      enabled        = false
+      provider_name  = ""
+      issuer_url     = ""
+      client_id      = ""
+      username_claim = ""
+      groups_claim   = ""
+      ca_certs       = ""`),
+				Check: cleared,
+			},
+		},
+	})
+}
+
+// testMKSClusterV2EnabledOIDC is the body of an enabled oidc object with the
+// required parameters only.
+const testMKSClusterV2EnabledOIDC = `
+      enabled       = true
+      provider_name = "keycloak"
+      issuer_url    = "https://issuer.example.com"
+      client_id     = "kubernetes"`
+
+// testMKSClusterV2OIDCConfig is a cluster whose kubernetes_options hold only
+// the oidc object with the given body.
+func testMKSClusterV2OIDCConfig(oidc string) string {
+	return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  kubernetes_options = {
+    oidc = {%s
+    }
+  }
+`, oidc))
+}
+
+// testMKSClusterV2OIDCSent checks the oidc object of the last request to the
+// route.
+func testMKSClusterV2OIDCSent(t *testing.T, fake *mksV2Fake, route string, want map[string]any) resource.TestCheckFunc {
+	t.Helper()
+
+	return func(_ *terraform.State) error {
+		cluster, _ := fake.lastBody(t, route)["cluster"].(map[string]any)
+		options, _ := cluster["kubernetes_options"].(map[string]any)
+		oidc, _ := options["oidc"].(map[string]any)
+		if !reflect.DeepEqual(oidc, want) {
+			return fmt.Errorf("%s sent oidc %v, want %v", route, oidc, want)
+		}
+
+		return nil
+	}
 }
 
 func TestMKSClusterV2ResourceStatusOnUpdate(t *testing.T) {

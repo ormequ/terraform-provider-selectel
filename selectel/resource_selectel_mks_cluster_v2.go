@@ -83,7 +83,7 @@ var (
 		"feature_gates":         types.SetType{ElemType: types.StringType},
 		"admission_controllers": types.SetType{ElemType: types.StringType},
 		"audit_logs":            types.ObjectType{AttrTypes: mksClusterV2AuditLogsAttrTypes},
-		"oidc":                  newMKSClusterV2OIDCType(),
+		"oidc":                  types.ObjectType{AttrTypes: mksClusterV2OIDCAttrTypes},
 		"x509_ca_certificates":  types.StringType,
 	}
 )
@@ -125,11 +125,11 @@ type mksClusterV2CiliumModel struct {
 }
 
 type mksClusterV2KubeOptionsModel struct {
-	FeatureGates         types.Set             `tfsdk:"feature_gates"`
-	AdmissionControllers types.Set             `tfsdk:"admission_controllers"`
-	AuditLogs            types.Object          `tfsdk:"audit_logs"`
-	OIDC                 mksClusterV2OIDCValue `tfsdk:"oidc"`
-	X509CACertificates   types.String          `tfsdk:"x509_ca_certificates"`
+	FeatureGates         types.Set    `tfsdk:"feature_gates"`
+	AdmissionControllers types.Set    `tfsdk:"admission_controllers"`
+	AuditLogs            types.Object `tfsdk:"audit_logs"`
+	OIDC                 types.Object `tfsdk:"oidc"`
+	X509CACertificates   types.String `tfsdk:"x509_ca_certificates"`
 }
 
 type mksClusterV2AuditLogsModel struct {
@@ -175,6 +175,14 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 	}
 	optionalBool := func(description string) schema.BoolAttribute {
 		return schema.BoolAttribute{Optional: true, Computed: true, Description: description, PlanModifiers: keepBool}
+	}
+	oidcParam := func(description, enabledDefault string) schema.StringAttribute {
+		return schema.StringAttribute{
+			Optional:      true,
+			Computed:      true,
+			Description:   description,
+			PlanModifiers: append(slices.Clone(keepString), mksClusterV2OIDCParam{enabledDefault: enabledDefault}),
+		}
 	}
 
 	resp.Schema = schema.Schema{
@@ -318,23 +326,25 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 						Optional: true,
 						Computed: true,
 						Description: "Connection of an OpenID Connect (OIDC) provider to the cluster. " +
-							"Disabling OIDC clears its other settings in the cluster.",
-						CustomType:    newMKSClusterV2OIDCType(),
+							"Disabling OIDC clears its settings, so with `enabled = false` the other arguments must be omitted or empty.",
 						PlanModifiers: keepObject,
 						Attributes: map[string]schema.Attribute{
 							"enabled": optionalBool("Enables authentication with OIDC."),
-							"provider_name": optionalString("Name of the connection, for identification only. " +
-								"The API does not apply a change of only this field."),
-							"issuer_url":     optionalString("URL of the OIDC provider. It must start with `https://`."),
-							"client_id":      optionalString("Client ID that all tokens must be issued for."),
-							"username_claim": optionalString("JWT claim to use as the username."),
-							"groups_claim":   optionalString("JWT claim to use as the user's group."),
+							"provider_name": oidcParam("Name of the connection, for identification only. "+
+								"The API does not apply a change of only this field.", ""),
+							"issuer_url": oidcParam("URL of the OIDC provider. It must start with `https://`.", ""),
+							"client_id":  oidcParam("Client ID that all tokens must be issued for.", ""),
+							"username_claim": oidcParam("JWT claim to use as the username. "+
+								"When OIDC is enabled and the argument is omitted, the API sets `sub`.", mksClusterV2OIDCUsernameClaim),
+							"groups_claim": oidcParam("JWT claim to use as the user's group. "+
+								"When OIDC is enabled and the argument is omitted, the API sets `groups`.", mksClusterV2OIDCGroupsClaim),
 							"ca_certs": schema.StringAttribute{
-								Optional:      true,
-								Computed:      true,
-								CustomType:    mksV2TrimmedStringType{},
-								Description:   "CA certificates of the OIDC provider in the PEM format. Leading and trailing whitespace is ignored.",
-								PlanModifiers: keepString,
+								Optional:   true,
+								Computed:   true,
+								CustomType: mksV2TrimmedStringType{},
+								Description: "CA certificates of the OIDC provider in the PEM format. " +
+									"Leading and trailing whitespace is ignored.",
+								PlanModifiers: append(slices.Clone(keepString), mksClusterV2OIDCParam{}),
 							},
 						},
 					},
@@ -1058,6 +1068,11 @@ func expandMKSClusterV2KubeOptions(ctx context.Context, obj types.Object) (*mksc
 			GroupsClaim:   oidc.GroupsClaim.ValueString(),
 			CaCerts:       oidc.CACerts.ValueString(),
 		}
+		if !opts.Oidc.Enabled {
+			// The API rejects any parameter of a disabled OIDC, see
+			// mk-api-v2 validate/oidc.go, and clears them itself.
+			opts.Oidc = mksclient.OIDC{}
+		}
 	}
 
 	return opts, diags
@@ -1153,13 +1168,12 @@ func flattenMKSClusterV2KubeOptions(ctx context.Context, o mksclient.KubernetesO
 		CACerts:       mksV2TrimmedString(o.Oidc.CaCerts),
 	})
 	diags.Append(d...)
-	oidc := mksClusterV2OIDCValue{ObjectValue: oidcObject}
 
 	obj, d := types.ObjectValueFrom(ctx, mksClusterV2KubeOptionsAttrTypes, mksClusterV2KubeOptionsModel{
 		FeatureGates:         stringSet(o.FeatureGates),
 		AdmissionControllers: stringSet(o.AdmissionControllers),
 		AuditLogs:            audit,
-		OIDC:                 oidc,
+		OIDC:                 oidcObject,
 		X509CACertificates:   x509,
 	})
 	diags.Append(d...)
@@ -1258,86 +1272,90 @@ func mksV2TrimmedString(value string) mksV2TrimmedStringValue {
 	return mksV2TrimmedStringValue{StringValue: types.StringValue(value)}
 }
 
-// mksClusterV2OIDCType is the oidc object. mk-api-v2 wipes every field of a
-// disabled OIDC, so two disabled values are equal whatever their other fields
-// hold: the fields can stay in the configuration while OIDC is off.
-type mksClusterV2OIDCType struct {
-	basetypes.ObjectType
+// The claims mk-api-v2 sets for an enabled OIDC that omits them, see its
+// validate/cluster.go:27-28.
+const (
+	mksClusterV2OIDCUsernameClaim = "sub"
+	mksClusterV2OIDCGroupsClaim   = "groups"
+)
+
+// mksClusterV2OIDCParam plans an OIDC parameter of a configured oidc object
+// the way mk-api-v2 stores it. A disabled OIDC has every parameter empty: the
+// API rejects any other value (validate/oidc.go) and clears them on disable
+// (daladapter/kubernetes_options.go). An enabled OIDC that omits a claim gets
+// the API default; a configured value wins.
+type mksClusterV2OIDCParam struct {
+	enabledDefault string
 }
 
-var _ basetypes.ObjectTypable = mksClusterV2OIDCType{}
-
-func newMKSClusterV2OIDCType() mksClusterV2OIDCType {
-	return mksClusterV2OIDCType{ObjectType: basetypes.ObjectType{AttrTypes: mksClusterV2OIDCAttrTypes}}
+func (m mksClusterV2OIDCParam) Description(_ context.Context) string {
+	return "Plans the value mk-api-v2 stores for the OIDC parameter."
 }
 
-func (t mksClusterV2OIDCType) Equal(o attr.Type) bool {
-	other, ok := o.(mksClusterV2OIDCType)
-
-	return ok && t.ObjectType.Equal(other.ObjectType)
+func (m mksClusterV2OIDCParam) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
 }
 
-func (t mksClusterV2OIDCType) String() string {
-	return "mksClusterV2OIDCType"
-}
-
-func (t mksClusterV2OIDCType) ValueFromObject(_ context.Context, in basetypes.ObjectValue) (basetypes.ObjectValuable, diag.Diagnostics) {
-	return mksClusterV2OIDCValue{ObjectValue: in}, nil
-}
-
-func (t mksClusterV2OIDCType) ValueFromTerraform(ctx context.Context, in tftypes.Value) (attr.Value, error) {
-	value, err := t.ObjectType.ValueFromTerraform(ctx, in)
-	if err != nil {
-		return nil, err
-	}
-	objectValue, ok := value.(basetypes.ObjectValue)
-	if !ok {
-		return nil, fmt.Errorf("unexpected value type %T", value)
+func (m mksClusterV2OIDCParam) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	var oidc types.Object
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, req.Path.ParentPath(), &oidc)...)
+	if resp.Diagnostics.HasError() || oidc.IsNull() || oidc.IsUnknown() {
+		// An omitted oidc object keeps the state, see keepObject.
+		return
 	}
 
-	return mksClusterV2OIDCValue{ObjectValue: objectValue}, nil
-}
+	enabled, known, diags := mksClusterV2OIDCEnabled(ctx, req, oidc)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !known {
+		if req.ConfigValue.IsNull() {
+			resp.PlanValue = types.StringUnknown()
+		}
 
-func (t mksClusterV2OIDCType) ValueType(_ context.Context) attr.Value {
-	return mksClusterV2OIDCValue{}
-}
-
-type mksClusterV2OIDCValue struct {
-	basetypes.ObjectValue
-}
-
-var _ basetypes.ObjectValuableWithSemanticEquals = mksClusterV2OIDCValue{}
-
-func (v mksClusterV2OIDCValue) Equal(o attr.Value) bool {
-	other, ok := o.(mksClusterV2OIDCValue)
-
-	return ok && v.ObjectValue.Equal(other.ObjectValue)
-}
-
-func (v mksClusterV2OIDCValue) Type(_ context.Context) attr.Type {
-	return newMKSClusterV2OIDCType()
-}
-
-func (v mksClusterV2OIDCValue) ObjectSemanticEquals(_ context.Context, priorValuable basetypes.ObjectValuable) (bool, diag.Diagnostics) {
-	var diags diag.Diagnostics
-
-	prior, ok := priorValuable.(mksClusterV2OIDCValue)
-	if !ok {
-		diags.AddError("Semantic Equality Check Error", fmt.Sprintf("Expected mksClusterV2OIDCValue, got %T.", priorValuable))
-
-		return false, diags
+		return
 	}
 
-	return v.disabled() && prior.disabled(), diags
+	if enabled {
+		if req.ConfigValue.IsNull() && m.enabledDefault != "" {
+			resp.PlanValue = types.StringValue(m.enabledDefault)
+		}
+
+		return
+	}
+
+	if !req.ConfigValue.IsNull() && !req.ConfigValue.IsUnknown() && req.ConfigValue.ValueString() != "" {
+		resp.Diagnostics.AddAttributeError(req.Path, "OIDC parameter set while OIDC is disabled",
+			fmt.Sprintf("The API rejects it: oidc parameters cannot be configured when it is disabled. "+
+				"Disabling OIDC clears its settings, so remove %s or set it to \"\".", req.Path))
+
+		return
+	}
+	resp.PlanValue = types.StringValue("")
 }
 
-func (v mksClusterV2OIDCValue) disabled() bool {
-	if v.IsNull() || v.IsUnknown() {
-		return false
+// mksClusterV2OIDCEnabled is the planned oidc.enabled: the configured value,
+// otherwise the state one, see keepBool, otherwise false, which create sends.
+func mksClusterV2OIDCEnabled(ctx context.Context, req planmodifier.StringRequest, oidc types.Object) (bool, bool, diag.Diagnostics) {
+	enabled, _ := oidc.Attributes()["enabled"].(types.Bool)
+	if enabled.IsUnknown() {
+		return false, false, nil
 	}
-	enabled, ok := v.Attributes()["enabled"].(types.Bool)
+	if !enabled.IsNull() {
+		return enabled.ValueBool(), true, nil
+	}
+	if req.State.Raw.IsNull() {
+		return false, true, nil
+	}
 
-	return ok && !enabled.IsNull() && !enabled.IsUnknown() && !enabled.ValueBool()
+	var stateEnabled types.Bool
+	diags := req.State.GetAttribute(ctx, req.Path.ParentPath().AtName("enabled"), &stateEnabled)
+	if stateEnabled.IsNull() || stateEnabled.IsUnknown() {
+		return false, false, diags
+	}
+
+	return stateEnabled.ValueBool(), true, diags
 }
 
 // mksClusterV2NameCase plans the state name for a configured name that

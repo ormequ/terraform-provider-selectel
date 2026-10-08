@@ -101,7 +101,7 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
     * `secret_name` - (Optional) Name of the secret in the `kube-system` namespace with the credentials of the logging system. The API does not apply a change of only this field.
 
-  * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection). Disabling OIDC clears its other settings in the cluster; they can stay in the configuration and are sent again when OIDC is enabled.
+  * `oidc` - (Optional) Connects an OpenID Connect (OIDC) provider to the cluster. Learn how to [configure the OIDC provider in the cluster](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/access-to-cluster-with-oidc-provider/#configure-oidc-connection). Disabling OIDC clears its settings in the cluster, so with `enabled = false` the other arguments must be omitted or set to `""`; the plan fails otherwise.
 
     * `enabled` - (Optional) Enables or disables authentication with OpenID Connect.
 
@@ -111,9 +111,9 @@ resource "selectel_mks_cluster_v2" "cluster_1" {
 
     * `client_id` - (Optional) Client ID that all tokens must be issued for. Required when `enabled` is `true`.
 
-    * `username_claim` - (Optional) JWT claim to use as the username.
+    * `username_claim` - (Optional) JWT claim to use as the username. When OIDC is enabled and the argument is omitted, the API sets `sub`.
 
-    * `groups_claim` - (Optional) JWT claim to use as the user's group.
+    * `groups_claim` - (Optional) JWT claim to use as the user's group. When OIDC is enabled and the argument is omitted, the API sets `groups`.
 
     * `ca_certs` - (Optional) CA certificates of the OIDC provider in the PEM format. Leading and trailing whitespace is ignored.
 

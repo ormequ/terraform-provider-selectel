@@ -93,7 +93,7 @@ func testMKSClusterV2MovedState() mksClusterV2Model {
 			"audit_logs": types.ObjectValueMust(mksClusterV2AuditLogsAttrTypes, map[string]attr.Value{
 				"enabled": types.BoolValue(true), "secret_name": types.StringValue(""),
 			}),
-			"oidc":                 mksClusterV2OIDCValue{ObjectValue: oidc},
+			"oidc":                 oidc,
 			"x509_ca_certificates": types.StringNull(),
 		}),
 		Status:    types.StringValue("ACTIVE"),
@@ -109,11 +109,11 @@ func TestMKSClusterV2MoveState(t *testing.T) {
 		"audit_logs": types.ObjectValueMust(mksClusterV2AuditLogsAttrTypes, map[string]attr.Value{
 			"enabled": types.BoolValue(false), "secret_name": types.StringValue(""),
 		}),
-		"oidc": mksClusterV2OIDCValue{ObjectValue: types.ObjectValueMust(mksClusterV2OIDCAttrTypes, map[string]attr.Value{
+		"oidc": types.ObjectValueMust(mksClusterV2OIDCAttrTypes, map[string]attr.Value{
 			"enabled": types.BoolValue(false), "provider_name": types.StringValue(""), "issuer_url": types.StringValue(""),
 			"client_id": types.StringValue(""), "username_claim": types.StringValue(""), "groups_claim": types.StringValue(""),
 			"ca_certs": mksV2TrimmedString(""),
-		})},
+		}),
 		"x509_ca_certificates": types.StringNull(),
 	})
 

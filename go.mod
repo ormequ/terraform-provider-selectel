@@ -21,7 +21,7 @@ require (
 	github.com/selectel/go-selvpcclient/v5 v5.0.0
 	github.com/selectel/iam-go v0.9.0
 	github.com/selectel/mks-go v1.1.0
-	github.com/selectel/mks-go/v2 v2.0.0-20261008043802-fb477b4ad8f2
+	github.com/selectel/mks-go/v2 v2.0.0-20261008050203-b3f5dbf5d701
 	github.com/selectel/private-dns-go v1.1.0
 	github.com/selectel/public-net-api-go v1.0.1
 	github.com/selectel/secretsmanager-go v0.2.1
@@ -91,4 +91,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/selectel/mks-go/v2 => github.com/ormequ/mks-go/v2 v2.0.0-20261008043802-fb477b4ad8f2
+replace github.com/selectel/mks-go/v2 => github.com/ormequ/mks-go/v2 v2.0.0-20261008050203-b3f5dbf5d701

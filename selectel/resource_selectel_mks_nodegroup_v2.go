@@ -1176,6 +1176,16 @@ func (r *mksNodegroupV2Resource) poolClient(ctx context.Context, pool string) (*
 	return client, diags
 }
 
+// mksNodegroupV2Segment returns the segment of a node group: the list returns
+// it as segment, the single GET as availability_zone only.
+func mksNodegroupV2Segment(ng *mksclient.NodegroupDetailed) string {
+	if ng.Segment != "" {
+		return ng.Segment
+	}
+
+	return valueOrZero(ng.AvailabilityZone)
+}
+
 // mksNodegroupV2Pool removes the zone letter from a segment: ru-3a is in ru-3.
 func mksNodegroupV2Pool(segment string) string {
 	return strings.TrimRight(segment, "abcdefghijklmnopqrstuvwxyz")
@@ -1589,7 +1599,7 @@ func (m *mksNodegroupV2Model) fromAPI(ctx context.Context, ng *mksclient.Nodegro
 
 	m.ID = types.StringValue(ng.ClusterId + "/" + ng.Id)
 	m.ClusterID = types.StringValue(ng.ClusterId)
-	m.Segment = types.StringValue(ng.Segment)
+	m.Segment = types.StringValue(mksNodegroupV2Segment(ng))
 	if !applied || prior.Count.IsNull() || prior.Count.IsUnknown() {
 		m.Count = types.Int64Value(int64(len(ng.Nodes)))
 	}

@@ -626,9 +626,18 @@ func TestMKSNodegroupV2ResourceImport(t *testing.T) {
 				Config: config,
 			},
 			{
+				// The single GET returns the segment as availability_zone
+				// only, so the verify covers segment taken from it.
 				ResourceName:      testMKSNodegroupV2Name,
 				ImportState:       true,
 				ImportStateVerify: true,
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if len(states) != 1 || states[0].Attributes["segment"] != "ru-7a" {
+						return fmt.Errorf("imported %d node groups, want one with segment ru-7a", len(states))
+					}
+
+					return nil
+				},
 				// The API never returns them.
 				ImportStateVerifyIgnore: []string{"cloud_nodegroup_config.cpus", "cloud_nodegroup_config.ram_mb"},
 			},

@@ -1061,9 +1061,13 @@ func (f *mksV2Fake) nodegroup(w http.ResponseWriter, r *http.Request) (mksclient
 	return ng, true
 }
 
+// getNodegroup returns the segment as availability_zone only, like mk-api-v2;
+// the list returns it as segment.
 func (f *mksV2Fake) getNodegroup(w http.ResponseWriter, r *http.Request) {
 	ng, ok := f.nodegroup(w, r)
 	if ok {
+		segment := ng.Segment
+		ng.Segment, ng.AvailabilityZone = "", &segment
 		writeMKSV2JSON(w, http.StatusOK, mksclient.NodegroupResp{Nodegroup: ng})
 	}
 }

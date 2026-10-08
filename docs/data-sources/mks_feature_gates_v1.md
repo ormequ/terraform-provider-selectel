@@ -6,6 +6,8 @@ description: |-
 
 # selectel\_mks\_feature_gates_v1
 
+-> **Note:** For new configurations, use [selectel_mks_feature_gates_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/mks_feature_gates_v2). To switch the cluster and node group resources to `_v2`, see the [migration guide](https://registry.terraform.io/providers/selectel/selectel/latest/docs/guides/migrating_mks_to_v2).
+
 Provides a list of available feature gates. For more information about feature gates in Managed Kubernetes, see the [official Selectel documentation](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/feature-gates/).
 
 ## Example Usage

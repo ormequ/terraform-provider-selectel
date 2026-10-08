@@ -1,3 +1,18 @@
+## Unreleased
+
+FEATURES:
+
+* Add new resources:
+  * `selectel_mks_cluster_v2`
+  * `selectel_mks_nodegroup_v2`, with cloud and dedicated node groups
+* Add new data sources:
+  * `selectel_mks_kubeconfig_v2`
+  * `selectel_mks_kube_versions_v2`
+  * `selectel_mks_feature_gates_v2`
+  * `selectel_mks_admission_controllers_v2`
+* `selectel_mks_cluster_v2`, `selectel_mks_nodegroup_v2`: move the state from `selectel_mks_cluster_v1` and `selectel_mks_nodegroup_v1` with a `moved` block in Terraform 1.8.0 and later, and import by resource identity in Terraform 1.12.0 and later.
+* Add the [Migrating Managed Kubernetes resources from _v1 to _v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/guides/migrating_mks_to_v2) guide.
+
 ## 8.7.0 (October 7, 2026)
 
 BREAKING CHANGES:

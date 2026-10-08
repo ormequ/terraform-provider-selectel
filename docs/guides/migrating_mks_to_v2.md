@@ -6,7 +6,7 @@ description: |-
 
 # Migrating Managed Kubernetes resources from _v1 to _v2
 
-`selectel_mks_cluster_v2` and `selectel_mks_nodegroup_v2` manage Managed Kubernetes clusters and cloud node groups through API v2. They work with the same clusters and node groups as `selectel_mks_cluster_v1` and `selectel_mks_nodegroup_v1`, so you can switch an existing cluster to the `_v2` resources without recreating it:
+`selectel_mks_cluster_v2` and `selectel_mks_nodegroup_v2` manage Managed Kubernetes clusters and node groups through API v2. They work with the same clusters and cloud node groups as `selectel_mks_cluster_v1` and `selectel_mks_nodegroup_v1`, so you can switch an existing cluster to the `_v2` resources without recreating it:
 
 - in Terraform 1.8.0 and later, with [`moved` blocks](https://developer.hashicorp.com/terraform/language/moved) — the provider converts the `_v1` state itself;
 - in earlier versions, by removing the `_v1` resources from the state and importing the `_v2` ones.

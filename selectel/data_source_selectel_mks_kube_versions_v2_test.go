@@ -60,7 +60,7 @@ func TestMKSKubeVersionsV2DataSourceProjectID(t *testing.T) {
 		{
 			name:              "from provider",
 			providerProjectID: "provider-project",
-			wantProjectID:     "provider-project",
+			wantProjectID:     mksV2KeystoneProjectID("provider-project"),
 		},
 		{
 			name:              "attribute wins over provider",

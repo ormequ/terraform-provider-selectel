@@ -473,7 +473,8 @@ func (r *mksClusterV2Resource) Create(ctx context.Context, req resource.CreateRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	// The state keeps the project as configured, see fromAPI.
+	// The state keeps the project as configured, see fromAPI, or as
+	// mksV2ProjectID resolved it.
 	plan.ProjectID = types.StringValue(projectID)
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -730,7 +731,8 @@ func (r *mksClusterV2Resource) ImportState(ctx context.Context, req resource.Imp
 			return
 		}
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), identity.ID)...)
-		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"), identity.ProjectID)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"),
+			mksV2KeystoneProjectID(identity.ProjectID.ValueString()))...)
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pool"), identity.Pool)...)
 
 		return
@@ -748,7 +750,7 @@ func (r *mksClusterV2Resource) ImportState(ctx context.Context, req resource.Imp
 	}
 
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"), r.config.ProjectID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"), mksV2KeystoneProjectID(r.config.ProjectID))...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pool"), r.config.Region)...)
 }
 
@@ -1076,9 +1078,9 @@ func (m *mksClusterV2Model) fromAPI(ctx context.Context, c *mksclient.ClusterDet
 	}
 	m.Pool = types.StringValue(c.Pool)
 	if c.ProjectId != "" && !mksV2SameProject(prior.ProjectID.ValueString(), c.ProjectId) {
-		// The API returns the project dashed, Keystone takes it without
-		// dashes, so the configured form is kept, see mksV2KeystoneProjectID.
-		m.ProjectID = types.StringValue(c.ProjectId)
+		// The API returns the project dashed: the state takes the form _v1
+		// stores, and keeps a configured one, see mksV2KeystoneProjectID.
+		m.ProjectID = types.StringValue(mksV2KeystoneProjectID(c.ProjectId))
 	}
 	if !applied {
 		m.KubeVersion = types.StringValue(mksClusterV2KubeVersion(prior.KubeVersion.ValueString(), c.KubeVersion))

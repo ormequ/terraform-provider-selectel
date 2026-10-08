@@ -79,8 +79,9 @@ func newMKSV2ServiceClient(token, baseURL, userAgent string) (*mksv2.ServiceClie
 	return client, nil
 }
 
-// mksV2ProjectID returns the project_id attribute, or the provider one when
-// the attribute is not set.
+// mksV2ProjectID returns the project_id attribute as set, or the provider one
+// in the form _v1 stores, see mksV2KeystoneProjectID, when the attribute is
+// not set.
 func mksV2ProjectID(attr types.String, config *Config) (string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
@@ -88,7 +89,7 @@ func mksV2ProjectID(attr types.String, config *Config) (string, diag.Diagnostics
 		return attr.ValueString(), diags
 	}
 	if config != nil && config.ProjectID != "" {
-		return config.ProjectID, diags
+		return mksV2KeystoneProjectID(config.ProjectID), diags
 	}
 
 	diags.AddAttributeError(path.Root("project_id"), "Missing project ID",
@@ -98,8 +99,8 @@ func mksV2ProjectID(attr types.String, config *Config) (string, diag.Diagnostics
 }
 
 // mksV2KeystoneProjectID returns the project ID in the form Keystone scopes a
-// token by: lower-case hex without dashes. mk-api-v2 returns project_id as a
-// dashed UUID, and Keystone answers 401 for that form.
+// token by and _v1 stores: lower-case hex without dashes. mk-api-v2 returns
+// project_id as a dashed UUID, and Keystone answers 401 for that form.
 func mksV2KeystoneProjectID(projectID string) string {
 	return strings.ToLower(strings.ReplaceAll(projectID, "-", ""))
 }

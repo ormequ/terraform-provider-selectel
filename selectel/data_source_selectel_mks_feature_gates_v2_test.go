@@ -79,7 +79,7 @@ func TestMKSFeatureGatesV2DataSource(t *testing.T) {
 		{
 			name:              "project from provider",
 			providerProjectID: "provider-project",
-			check:             resource.TestCheckResourceAttr(name, "project_id", "provider-project"),
+			check:             resource.TestCheckResourceAttr(name, "project_id", mksV2KeystoneProjectID("provider-project")),
 		},
 		{
 			name:      "unknown version",

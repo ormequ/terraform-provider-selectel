@@ -590,8 +590,8 @@ func TestMKSClusterV2ResourceKubeVersionUpgradedOutside(t *testing.T) {
 func TestMKSClusterV2ResourceImport(t *testing.T) {
 	t.Parallel()
 
-	// The dashed provider project is the form mk-api-v2 returns: the import
-	// keeps it, the clients take it without dashes.
+	// The dashed provider project is the form mk-api-v2 returns: the state
+	// and the clients take it without dashes, like _v1.
 	for _, providerProject := range []string{"provider-project", testMKSV2APIProject} {
 		t.Run(providerProject, func(t *testing.T) {
 			t.Parallel()
@@ -611,7 +611,7 @@ func TestMKSClusterV2ResourceImport(t *testing.T) {
     x509_ca_certificates = "Y2VydA=="
   }
 `),
-						Check: resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", providerProject),
+						Check: resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", mksV2KeystoneProjectID(providerProject)),
 					},
 					{
 						ResourceName:      testMKSClusterV2Name,
@@ -624,6 +624,65 @@ func TestMKSClusterV2ResourceImport(t *testing.T) {
 			})
 
 			fake.checkClients(t, mksV2KeystoneProjectID(providerProject))
+		})
+	}
+}
+
+// TestMKSClusterV2ResourceImportDashedProject imports by ID a cluster that
+// mk-api-v2 returns with a dashed project: the state takes it without dashes,
+// like _v1, and the plan of an un-dashed or no project_id is empty.
+func TestMKSClusterV2ResourceImportDashedProject(t *testing.T) {
+	testMKSV2TerraformAtLeast(t, 1, 5)
+	t.Parallel()
+
+	tests := []struct{ name, projectID string }{
+		{name: "un-dashed project_id", projectID: testMKSV2KeystoneProject},
+		{name: "no project_id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+			fake.seedCluster(mksclient.ClusterDetailed{
+				Id: testMKSV2ClusterID, Name: "tf-v2", Pool: testMKSV2Pool, ProjectId: testMKSV2APIProject, KubeVersion: "1.30.3",
+				ClusterType: mksclient.HIGHAVAILABILITY, NetworkType: mksclient.ClusterDetailedNetworkTypeSTANDARD,
+				NetworkId: "net-1", SubnetId: "subnet-1", EnableAutorepair: true, EnablePatchVersionAutoUpgrade: true,
+				MaintenanceWindowStart: "01:00:00", MaintenanceWindowEnd: "03:00:00",
+				CniType: mksclient.ClusterDetailedCniType(mksclient.ClusterCniTypeCALICO), KubeApiIp: "192.0.2.10", Status: "ACTIVE",
+			}, "")
+
+			config := fmt.Sprintf(`
+import {
+  to = %s
+  id = %q
+}
+`, testMKSClusterV2Name, testMKSV2ClusterID) + testMKSClusterV2Config(testMKSClusterV2ProviderConfig(testMKSV2APIProject, testMKSV2Pool), `
+  `+testMKSV2ProjectIDArgument(tt.projectID)+`
+  kube_version             = "1.30.3"
+  workers_type             = "CLOUD"
+  maintenance_window_start = "01:00:00"
+`)
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy:             testMKSClusterV2Destroyed(fake),
+				Steps: []resource.TestStep{
+					{
+						Config: config,
+						Check: resource.ComposeTestCheckFunc(
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", testMKSV2KeystoneProject),
+							testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateCluster: 0, mksV2RoutePatchCluster: 0}),
+						),
+					},
+					{
+						Config:   config,
+						PlanOnly: true,
+					},
+				},
+			})
+
+			fake.checkClients(t, testMKSV2KeystoneProject)
 		})
 	}
 }

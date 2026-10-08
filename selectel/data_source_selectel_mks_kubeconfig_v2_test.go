@@ -69,7 +69,7 @@ func TestMKSKubeconfigV2DataSourceProviderProjectID(t *testing.T) {
 	t.Parallel()
 
 	// The dashed provider project is the form mk-api-v2 returns: the data
-	// source keeps it, the client takes it without dashes.
+	// source and the client take it without dashes, like _v1.
 	for _, providerProject := range []string{"provider-project", testMKSV2APIProject} {
 		t.Run(providerProject, func(t *testing.T) {
 			t.Parallel()
@@ -82,7 +82,7 @@ func TestMKSKubeconfigV2DataSourceProviderProjectID(t *testing.T) {
 					{
 						Config: testMKSKubeconfigV2Basic(providerProject, ""),
 						Check: resource.TestCheckResourceAttr(
-							"data.selectel_mks_kubeconfig_v2.kubeconfig_tf_test_1", "project_id", providerProject),
+							"data.selectel_mks_kubeconfig_v2.kubeconfig_tf_test_1", "project_id", mksV2KeystoneProjectID(providerProject)),
 					},
 				},
 			})

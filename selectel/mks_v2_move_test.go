@@ -1,7 +1,6 @@
 package selectel
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -32,7 +31,7 @@ const testMKSV2MoveProvider = "registry.terraform.io/selectel/selectel"
 func testMKSClusterV1State() map[string]any {
 	return map[string]any{
 		"name":                              "tf-v2",
-		"project_id":                        "v1-project",
+		"project_id":                        "v1project",
 		"region":                            testMKSV2Pool,
 		"kube_version":                      "1.30.3",
 		"enable_autorepair":                 false,
@@ -72,7 +71,7 @@ func testMKSClusterV2MovedState() mksClusterV2Model {
 		ID:                            types.StringValue(testMKSV2ClusterID),
 		Name:                          types.StringValue("tf-v2"),
 		Pool:                          types.StringValue(testMKSV2Pool),
-		ProjectID:                     types.StringValue("v1-project"),
+		ProjectID:                     types.StringValue("v1project"),
 		KubeVersion:                   types.StringValue("1.30.3"),
 		ClusterType:                   types.StringValue("HIGH_AVAILABILITY_MULTI_AZ"),
 		WorkersType:                   types.StringNull(),
@@ -515,26 +514,19 @@ func TestMKSClusterV2ResourceMovedFromV1(t *testing.T) {
 		// configName and configVersion are the _v2 configuration. The
 		// upper-case case covers the plain move as well.
 		configName, configVersion string
-		// project is the one of the cluster and the _v1 state, and
-		// providerProject the provider one; both default to provider-project.
-		project, providerProject string
 	}{
 		{name: "patch auto-upgraded past the configuration", version: "1.30.5", configName: "tf-v2", configVersion: "1.30.3"},
 		{name: "lower minor configured", version: "1.30.5", configName: "tf-v2", configVersion: "1.29.8"},
 		{name: "upper-case name configured", version: "1.30.3", configName: "TF-v2", configVersion: "1.30.3"},
-		{
-			name: "dashed project in the state", version: "1.30.3", configName: "tf-v2", configVersion: "1.30.3",
-			project: testMKSV2APIProject, providerProject: testMKSV2KeystoneProject,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			project := cmp.Or(tt.project, "provider-project")
-			providerProject := cmp.Or(tt.providerProject, "provider-project")
+			// mk-api-v2 returns the project dashed, while mk-api V1 and so
+			// the _v1 state have it without dashes.
 			fake := newMKSV2Fake(t)
 			fake.seedCluster(mksclient.ClusterDetailed{
-				Id: testMKSV2ClusterID, Name: "tf-v2", Pool: testMKSV2Pool, ProjectId: project, KubeVersion: tt.version,
+				Id: testMKSV2ClusterID, Name: "tf-v2", Pool: testMKSV2Pool, ProjectId: testMKSV2APIProject, KubeVersion: tt.version,
 				ClusterType: mksclient.HIGHAVAILABILITY, NetworkType: mksclient.ClusterDetailedNetworkTypeSTANDARD,
 				NetworkId: "net-1", SubnetId: "subnet-1", EnableAutorepair: true, EnablePatchVersionAutoUpgrade: true,
 				MaintenanceWindowStart: "01:00:00", MaintenanceWindowEnd: "03:00:00",
@@ -547,7 +539,7 @@ func TestMKSClusterV2ResourceMovedFromV1(t *testing.T) {
 			// The state _v1 left after a refresh of that cluster: zonal and
 			// no cluster_type, an OIDC block for a disabled OIDC.
 			v1 := map[string]any{
-				"name": "tf-v2", "project_id": project, "region": testMKSV2Pool, "kube_version": tt.version,
+				"name": "tf-v2", "project_id": testMKSV2KeystoneProject, "region": testMKSV2Pool, "kube_version": tt.version,
 				"enable_autorepair": true, "enable_patch_version_auto_upgrade": true, "enable_pod_security_policy": false,
 				"network_id": "net-1", "subnet_id": "subnet-1", "maintenance_window_start": "01:00:00", "maintenance_window_end": "03:00:00",
 				"zonal": false, "kube_api_ip": "192.0.2.10", "status": "ACTIVE", "feature_gates": []any{"TopologyAwareHints"},
@@ -562,7 +554,7 @@ moved {
   from = selectel_mks_cluster_v1.cluster_tf_test_1
   to   = selectel_mks_cluster_v2.cluster_tf_test_1
 }
-` + strings.Replace(testMKSClusterV2Config(testMKSClusterV2ProviderConfig(providerProject, testMKSV2Pool), fmt.Sprintf(`
+` + strings.Replace(testMKSClusterV2Config(testMKSClusterV2ProviderConfig(testMKSV2KeystoneProject, testMKSV2Pool), fmt.Sprintf(`
   kube_version             = %q
   workers_type             = "CLOUD"
   maintenance_window_start = "01:00:00"
@@ -592,7 +584,7 @@ moved {
 							resource.TestCheckResourceAttr(testMKSClusterV2Name, "kube_version", tt.version),
 							resource.TestCheckResourceAttr(testMKSClusterV2Name, "cluster_type", "HIGH_AVAILABILITY"),
 							resource.TestCheckResourceAttr(testMKSClusterV2Name, "workers_type", "CLOUD"),
-							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", project),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", testMKSV2KeystoneProject),
 							testMKSV2NoResource("selectel_mks_cluster_v1.cluster_tf_test_1"),
 							testMKSClusterV2Calls(fake, map[string]int{
 								mksV2RouteCreateCluster: 0, mksV2RoutePatchCluster: 0, mksV2RouteDeleteCluster: 0,
@@ -603,7 +595,7 @@ moved {
 				},
 			})
 
-			fake.checkClients(t, providerProject)
+			fake.checkClients(t, testMKSV2KeystoneProject)
 		})
 	}
 }
@@ -751,8 +743,8 @@ moved {
 
 // TestMKSClusterV2ResourceImportByIdentity imports with an import block that
 // carries the identity: project and pool come from it, not from the provider.
-// A dashed identity project, the form mk-api-v2 returns, is kept as given
-// and matches an un-dashed configuration.
+// The state takes the identity project without dashes, like _v1, and a
+// configuration of either form matches it.
 func TestMKSClusterV2ResourceImportByIdentity(t *testing.T) {
 	testMKSV2TerraformAtLeast(t, 1, 12)
 	t.Parallel()
@@ -800,7 +792,7 @@ import {
 						Config: config,
 						Check: resource.ComposeTestCheckFunc(
 							resource.TestCheckResourceAttr(testMKSClusterV2Name, "id", testMKSV2ClusterID),
-							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", tt.identityProject),
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", mksV2KeystoneProjectID(tt.identityProject)),
 							resource.TestCheckResourceAttr(testMKSClusterV2Name, "pool", testMKSV2Pool),
 							resource.TestCheckResourceAttr(testMKSClusterV2Name, "maintenance_window_start", "01:00:00"),
 							testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateCluster: 0, mksV2RoutePatchCluster: 0}),

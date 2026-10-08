@@ -185,7 +185,7 @@ func moveMKSClusterV1State(ctx context.Context, req resource.MoveStateRequest, r
 		ID:          types.StringPointerValue(v1.ID),
 		Name:        types.StringPointerValue(v1.Name),
 		Pool:        types.StringPointerValue(v1.Region),
-		ProjectID:   types.StringPointerValue(v1.ProjectID),
+		ProjectID:   mksV2MovedProjectID(v1.ProjectID),
 		KubeVersion: types.StringPointerValue(v1.KubeVersion),
 		ClusterType: clusterType,
 		// Read sets it from the network type of the cluster.
@@ -327,3 +327,13 @@ func moveMKSNodegroupV1State(ctx context.Context, req resource.MoveStateRequest,
 // means that the provider project is another one than that the node group is
 // gone.
 const mksNodegroupV2MovedProjectKey = "moved_project_id"
+
+// mksV2MovedProjectID returns the _v1 project_id in the form _v1 stores, see
+// mksV2KeystoneProjectID.
+func mksV2MovedProjectID(projectID *string) types.String {
+	if projectID == nil {
+		return types.StringNull()
+	}
+
+	return types.StringValue(mksV2KeystoneProjectID(*projectID))
+}

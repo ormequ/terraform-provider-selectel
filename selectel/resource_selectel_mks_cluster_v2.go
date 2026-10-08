@@ -262,10 +262,13 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 			"maintenance_window_start": optionalString(
 				"Time in UTC when maintenance in the cluster starts, in the `hh:mm:ss` format."),
 			"enable_autorepair": schema.BoolAttribute{
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(true),
-				Description: "Allows worker nodes to be reinstalled automatically when they are unavailable or unhealthy.",
+				Optional: true,
+				Computed: true,
+				Description: "Allows worker nodes to be reinstalled automatically when they are unavailable or unhealthy. " +
+					"If omitted, a new cluster gets `true` for `workers_type = \"CLOUD\"` and `false` for `\"DEDICATED\"`, " +
+					"and an existing cluster keeps its current value. Auto repair is not available for dedicated workers: " +
+					"the API turns it off, so `true` with `workers_type = \"DEDICATED\"` fails the plan.",
+				PlanModifiers: []planmodifier.Bool{mksClusterV2AutorepairDefault{}},
 			},
 			"enable_patch_version_auto_upgrade": optionalBool(
 				"Allows the cluster to be upgraded to the latest patch version during the maintenance window. " +
@@ -398,10 +401,12 @@ func (m *mksClusterV2Model) setIdentity(ctx context.Context, identity *tfsdk.Res
 }
 
 func (r *mksClusterV2Resource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	var clusterType, cniType types.String
-	var autoUpgrade types.Bool
+	var clusterType, cniType, workersType types.String
+	var autoUpgrade, autorepair types.Bool
 	var cilium types.Object
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cluster_type"), &clusterType)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("workers_type"), &workersType)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("enable_autorepair"), &autorepair)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("enable_patch_version_auto_upgrade"), &autoUpgrade)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cni_type"), &cniType)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cni_cilium_settings"), &cilium)...)
@@ -423,6 +428,15 @@ func (r *mksClusterV2Resource) ValidateConfig(ctx context.Context, req resource.
 		resp.Diagnostics.AddAttributeError(path.Root("enable_patch_version_auto_upgrade"),
 			"Patch version auto-upgrade is not available for BASIC clusters",
 			"Set enable_patch_version_auto_upgrade to false or omit it when cluster_type is BASIC.")
+	}
+
+	// The API turns it off for an L3VPN cluster at create, see mk-api-v2
+	// daladapter/cluster.go, so the plan could not match the result.
+	if workersType.ValueString() == "DEDICATED" && autorepair.ValueBool() {
+		resp.Diagnostics.AddAttributeError(path.Root("enable_autorepair"),
+			"Auto repair is not available for dedicated workers",
+			"The API turns auto repair off for a cluster with workers_type DEDICATED. "+
+				"Set enable_autorepair to false or omit it.")
 	}
 }
 
@@ -1359,6 +1373,38 @@ func (m mksClusterV2OIDCParam) PlanModifyString(ctx context.Context, req planmod
 		return
 	}
 	resp.PlanValue = types.StringValue("")
+}
+
+// mksClusterV2AutorepairDefault plans an omitted enable_autorepair: the state
+// value on update, otherwise what mk-api-v2 stores at create, which is false
+// for an L3VPN cluster whatever was sent (daladapter/cluster.go) and true for
+// a STANDARD one. A replacement is planned as a create, with no state.
+type mksClusterV2AutorepairDefault struct{}
+
+func (m mksClusterV2AutorepairDefault) Description(_ context.Context) string {
+	return "An omitted value keeps the state, or on create is false for DEDICATED workers and true for CLOUD ones."
+}
+
+func (m mksClusterV2AutorepairDefault) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m mksClusterV2AutorepairDefault) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	if !req.ConfigValue.IsNull() {
+		return
+	}
+	if !req.StateValue.IsNull() {
+		resp.PlanValue = req.StateValue
+
+		return
+	}
+
+	var workersType types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("workers_type"), &workersType)...)
+	if resp.Diagnostics.HasError() || workersType.IsUnknown() || workersType.IsNull() {
+		return
+	}
+	resp.PlanValue = types.BoolValue(workersType.ValueString() != "DEDICATED")
 }
 
 // mksV2TrimmedStringKeep plans the state value when the configured one

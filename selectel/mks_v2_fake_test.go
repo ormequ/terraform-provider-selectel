@@ -383,6 +383,10 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 		// Create ignores them, see mk-api-v2 protoadapter/create_cluster.go.
 		c.KubernetesOptions.X509CaCertificates = ""
 	}
+	// Like daladapter/cluster.go, auto repair is off for L3VPN whatever was sent.
+	if c.NetworkType == mksclient.ClusterDetailedNetworkTypeL3VPN {
+		c.EnableAutorepair = false
+	}
 	f.clusters[c.Id] = c
 
 	f.addTask(c.Id, "CREATE_CLUSTER", f.activateCluster(c.Id))

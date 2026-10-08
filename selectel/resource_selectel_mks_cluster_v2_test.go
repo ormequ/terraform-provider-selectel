@@ -238,6 +238,112 @@ func TestMKSClusterV2ResourceWorkersType(t *testing.T) {
 	}
 }
 
+// TestMKSClusterV2ResourceAutorepairDefault covers an omitted or false
+// enable_autorepair: mk-api-v2 turns auto repair off for a DEDICATED (L3VPN)
+// cluster at create, so the plan must match what it stores.
+func TestMKSClusterV2ResourceAutorepairDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		workersType string
+		autorepair  string
+		want        bool
+	}{
+		{name: "dedicated unset", workersType: "DEDICATED", want: false},
+		{name: "cloud unset", workersType: "CLOUD", want: true},
+		{name: "cloud false", workersType: "CLOUD", autorepair: "enable_autorepair = false", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy:             testMKSClusterV2Destroyed(fake),
+				Steps: []resource.TestStep{
+					{
+						Config: testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = %q
+  %s
+`, tt.workersType, tt.autorepair)),
+						Check: resource.ComposeTestCheckFunc(
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "enable_autorepair", fmt.Sprint(tt.want)),
+							func(_ *terraform.State) error {
+								return testMKSClusterV2BodyFields(fake.lastBody(t, mksV2RouteCreateCluster),
+									map[string]any{"enable_autorepair": tt.want})
+							},
+						),
+					},
+				},
+			})
+		})
+	}
+}
+
+// TestMKSClusterV2ResourceDedicatedAutorepair checks that auto repair for
+// dedicated workers fails the plan on create and on update, and that a switch
+// to CLOUD plans the CLOUD default for the new cluster.
+func TestMKSClusterV2ResourceDedicatedAutorepair(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+
+	config := func(workersType, autorepair string) string {
+		return testMKSClusterV2Config("", fmt.Sprintf(`
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = %q
+  %s
+`, workersType, autorepair))
+	}
+	wantError := testMKSClusterV2Error(`Auto repair is not available for dedicated workers`)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSClusterV2Destroyed(fake),
+		Steps: []resource.TestStep{
+			{
+				Config:      config("DEDICATED", "enable_autorepair = true"),
+				PlanOnly:    true,
+				ExpectError: wantError,
+			},
+			{
+				Config: config("DEDICATED", ""),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "enable_autorepair", "false"),
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateCluster: 1}),
+				),
+			},
+			{
+				Config:      config("DEDICATED", "enable_autorepair = true"),
+				PlanOnly:    true,
+				ExpectError: wantError,
+			},
+			{
+				// The replacement is planned as a create, so the state value
+				// of the old cluster is not kept.
+				Config: config("CLOUD", ""),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(testMKSClusterV2Name, "enable_autorepair", "true"),
+					func(_ *terraform.State) error {
+						return testMKSClusterV2BodyFields(fake.lastBody(t, mksV2RouteCreateCluster),
+							map[string]any{"network_type": "STANDARD", "enable_autorepair": true})
+					},
+				),
+			},
+		},
+	})
+
+	calls := fake.callCount(mksV2RoutePatchCluster)
+	if calls != 0 {
+		t.Errorf("the provider sent %d patch requests, want none", calls)
+	}
+}
+
 func TestMKSClusterV2ResourceCreateTaskError(t *testing.T) {
 	t.Parallel()
 	fake := newMKSV2Fake(t)

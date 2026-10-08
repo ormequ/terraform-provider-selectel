@@ -97,6 +97,13 @@ type mksV2FakeClient struct {
 	userAgent string
 }
 
+// testMKSV2KeystoneProject is a project ID the way Keystone takes it, and
+// testMKSV2APIProject is the same project the way mk-api-v2 returns it.
+const (
+	testMKSV2KeystoneProject = "35b965e88e5948488eed5e509833033c"
+	testMKSV2APIProject      = "35b965e8-8e59-4848-8eed-5e509833033c"
+)
+
 const (
 	mksV2RouteCluster              = "GET /v2/clusters/{cluster_id}"
 	mksV2RouteKubeconfig           = "GET /v2/clusters/{cluster_id}/kubeconfig"
@@ -230,6 +237,10 @@ func (f *mksV2Fake) config(userAgent string, attr func(key string) string) *Conf
 			f.mu.Lock()
 			f.clients = append(f.clients, mksV2FakeClient{projectID: projectID, pool: pool, userAgent: config.UserAgent})
 			f.mu.Unlock()
+			// Keystone answers 401 for a project scope by the dashed form.
+			if projectID != mksV2KeystoneProjectID(projectID) && mksV2FakeAPIProjectID(mksV2KeystoneProjectID(projectID)) == projectID {
+				return nil, fmt.Errorf("authentication failed for project %q", projectID)
+			}
 
 			return newMKSV2ServiceClient("fake-token", f.server.URL, config.UserAgent)
 		},
@@ -299,7 +310,8 @@ func (f *mksV2Fake) getKubeconfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // createCluster fills what the API defaults and starts CREATE_CLUSTER. The
-// cluster gets testMKSV2ClusterID and the project of the last client.
+// cluster gets testMKSV2ClusterID and the project of the last client, dashed
+// like mk-api-v2 returns it.
 func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 	var body mksclient.ClusterCreateBody
 	err := json.NewDecoder(r.Body).Decode(&body)
@@ -323,7 +335,7 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 		Id:                            testMKSV2ClusterID,
 		Name:                          strings.ToLower(opts.Name),
 		Pool:                          opts.Pool,
-		ProjectId:                     f.clients[len(f.clients)-1].projectID,
+		ProjectId:                     mksV2FakeAPIProjectID(f.clients[len(f.clients)-1].projectID),
 		KubeVersion:                   opts.KubeVersion,
 		ClusterType:                   clusterType,
 		Basic:                         clusterType == mksclient.BASIC,
@@ -684,6 +696,14 @@ func valueOr[T any](v *T, fallback T) T {
 }
 
 // seedCluster adds a cluster and the kubeconfig the API returns for it.
+// clusterProject returns the project_id the fake returns for the cluster.
+func (f *mksV2Fake) clusterProject(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.clusters[id].ProjectId
+}
+
 func (f *mksV2Fake) seedCluster(c mksclient.ClusterDetailed, kubeconfig string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -769,10 +789,24 @@ func (f *mksV2Fake) storedX509(id string) string {
 	return f.x509CACertificates[id]
 }
 
-// checkClients fails the test unless every client was built for projectID and
-// every request carried the User-Agent of the provider Config.
+// mksV2FakeAPIProjectID returns a Keystone project ID the way mk-api-v2
+// returns it, as a dashed UUID (apiadapter/clusters.go). An ID that is not 32
+// characters long stays as is.
+func mksV2FakeAPIProjectID(projectID string) string {
+	if len(projectID) != 32 {
+		return projectID
+	}
+
+	return projectID[:8] + "-" + projectID[8:12] + "-" + projectID[12:16] + "-" + projectID[16:20] + "-" + projectID[20:]
+}
+
+// checkClients fails the test unless every client was built for the Keystone
+// form of projectID and every request carried the User-Agent of the provider
+// Config.
 func (f *mksV2Fake) checkClients(t *testing.T, projectID string) {
 	t.Helper()
+
+	projectID = mksV2KeystoneProjectID(projectID)
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

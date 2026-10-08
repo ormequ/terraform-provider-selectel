@@ -1,6 +1,7 @@
 package selectel
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -97,6 +98,97 @@ func TestMKSClusterV2ResourceBasic(t *testing.T) {
 	})
 
 	fake.checkClients(t, "attribute-project")
+}
+
+// TestMKSClusterV2ResourceProjectIDForms covers mk-api-v2 returning project_id
+// dashed, while Keystone takes it without dashes: the state keeps the
+// configured form, and every client is built for the un-dashed one.
+func TestMKSClusterV2ResourceProjectIDForms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// createProject is the project_id configured at create, configProject
+		// the one configured after it, providerProject the provider one.
+		createProject, configProject, providerProject string
+		wantProject                                   string
+	}{
+		{
+			name:          "un-dashed configured",
+			createProject: testMKSV2KeystoneProject, configProject: testMKSV2KeystoneProject,
+			wantProject: testMKSV2KeystoneProject,
+		},
+		{
+			name:          "dashed configured",
+			createProject: testMKSV2APIProject, configProject: testMKSV2APIProject,
+			wantProject: testMKSV2APIProject,
+		},
+		{
+			name:          "dashed state, un-dashed configured",
+			createProject: testMKSV2APIProject, configProject: testMKSV2KeystoneProject,
+			wantProject: testMKSV2APIProject,
+		},
+		{
+			name:          "un-dashed state, dashed configured",
+			createProject: testMKSV2KeystoneProject, configProject: testMKSV2APIProject,
+			wantProject: testMKSV2KeystoneProject,
+		},
+		{
+			name:            "un-dashed provider project",
+			providerProject: testMKSV2KeystoneProject,
+			wantProject:     testMKSV2KeystoneProject,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+			config := func(projectID string) string {
+				return testMKSClusterV2Config(testMKSClusterV2ProviderConfig(tt.providerProject, ""), `
+  `+testMKSV2ProjectIDArgument(projectID)+`
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+`)
+			}
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy:             testMKSClusterV2Destroyed(fake),
+				Steps: []resource.TestStep{
+					{
+						Config: config(tt.createProject),
+						Check: resource.ComposeTestCheckFunc(
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id",
+								cmp.Or(tt.createProject, tt.providerProject)),
+							func(_ *terraform.State) error {
+								got := fake.clusterProject(testMKSV2ClusterID)
+								if got != testMKSV2APIProject {
+									return fmt.Errorf("the fake stored project %q, want the dashed %q", got, testMKSV2APIProject)
+								}
+
+								return nil
+							},
+						),
+					},
+					{
+						// The refresh builds the client from the state.
+						Config:   config(tt.configProject),
+						PlanOnly: true,
+					},
+					{
+						Config: config(tt.configProject),
+						Check: resource.ComposeTestCheckFunc(
+							resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", tt.wantProject),
+							testMKSClusterV2Calls(fake, map[string]int{mksV2RouteCreateCluster: 1, mksV2RouteDeleteCluster: 0}),
+						),
+					},
+				},
+			})
+
+			fake.checkClients(t, testMKSV2KeystoneProject)
+		})
+	}
 }
 
 func TestMKSClusterV2ResourceWorkersType(t *testing.T) {
@@ -497,14 +589,20 @@ func TestMKSClusterV2ResourceKubeVersionUpgradedOutside(t *testing.T) {
 
 func TestMKSClusterV2ResourceImport(t *testing.T) {
 	t.Parallel()
-	fake := newMKSV2Fake(t)
 
-	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: fake.providerFactories(),
-		CheckDestroy:             testMKSClusterV2Destroyed(fake),
-		Steps: []resource.TestStep{
-			{
-				Config: testMKSClusterV2Config(testMKSClusterV2ProviderConfig("provider-project", testMKSV2Pool), `
+	// The dashed provider project is the form mk-api-v2 returns: the import
+	// keeps it, the clients take it without dashes.
+	for _, providerProject := range []string{"provider-project", testMKSV2APIProject} {
+		t.Run(providerProject, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy:             testMKSClusterV2Destroyed(fake),
+				Steps: []resource.TestStep{
+					{
+						Config: testMKSClusterV2Config(testMKSClusterV2ProviderConfig(providerProject, testMKSV2Pool), `
   kube_version      = "1.30.3"
   workers_type      = "DEDICATED"
   cloud_subnet_cidr = "10.10.0.0/16"
@@ -513,19 +611,21 @@ func TestMKSClusterV2ResourceImport(t *testing.T) {
     x509_ca_certificates = "Y2VydA=="
   }
 `),
-				Check: resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", "provider-project"),
-			},
-			{
-				ResourceName:      testMKSClusterV2Name,
-				ImportState:       true,
-				ImportStateVerify: true,
-				// The API never returns them.
-				ImportStateVerifyIgnore: []string{"cloud_subnet_cidr", "kubernetes_options.x509_ca_certificates"},
-			},
-		},
-	})
+						Check: resource.TestCheckResourceAttr(testMKSClusterV2Name, "project_id", providerProject),
+					},
+					{
+						ResourceName:      testMKSClusterV2Name,
+						ImportState:       true,
+						ImportStateVerify: true,
+						// The API never returns them.
+						ImportStateVerifyIgnore: []string{"cloud_subnet_cidr", "kubernetes_options.x509_ca_certificates"},
+					},
+				},
+			})
 
-	fake.checkClients(t, "provider-project")
+			fake.checkClients(t, mksV2KeystoneProjectID(providerProject))
+		})
+	}
 }
 
 func TestMKSClusterV2ResourceImportNeedsProviderConfig(t *testing.T) {

@@ -902,6 +902,59 @@ func (p testMKSNodegroupV2Private) SetKey(_ context.Context, key string, value [
 	return nil
 }
 
+// TestMKSNodegroupV2ResourceDashedProviderProject creates a node group with
+// the provider project in the dashed form mk-api-v2 returns: the clients take
+// it without dashes.
+func TestMKSNodegroupV2ResourceDashedProviderProject(t *testing.T) {
+	t.Parallel()
+	fake := newMKSV2Fake(t)
+	testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+
+	config := testMKSClusterV2ProviderConfig(testMKSV2APIProject, "") + testMKSNodegroupV2Resource(testMKSNodegroupV2Flavor)
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: fake.providerFactories(),
+		CheckDestroy:             testMKSNodegroupV2Destroyed(fake, "ng-1"),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check:  resource.TestCheckResourceAttr(testMKSNodegroupV2Name, "id", testMKSNodegroupV2ID),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+
+	fake.checkClients(t, testMKSV2KeystoneProject)
+}
+
+// TestMKSNodegroupV2CheckMovedProject compares the _v1 project of a moved
+// node group with the provider one in their Keystone form.
+func TestMKSNodegroupV2CheckMovedProject(t *testing.T) {
+	tests := []struct {
+		name, movedProject, providerProject string
+		wantError                           bool
+	}{
+		{name: "same form", movedProject: testMKSV2KeystoneProject, providerProject: testMKSV2KeystoneProject},
+		{name: "dashed moved project", movedProject: testMKSV2APIProject, providerProject: testMKSV2KeystoneProject},
+		{name: "dashed provider project", movedProject: testMKSV2KeystoneProject, providerProject: testMKSV2APIProject},
+		{name: "other project", movedProject: "other-project", providerProject: testMKSV2KeystoneProject, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &mksNodegroupV2Resource{mksV2Provided{config: &Config{ProjectID: tt.providerProject}}}
+			private := testMKSNodegroupV2Private{mksNodegroupV2MovedProjectKey: []byte(fmt.Sprintf("%q", tt.movedProject))}
+
+			diags := r.checkMovedProject(t.Context(), private)
+			if diags.HasError() != tt.wantError {
+				t.Errorf("checkMovedProject() = %v, want an error: %t", diags, tt.wantError)
+			}
+		})
+	}
+}
+
 func TestMKSNodegroupV2NodegroupClientPool(t *testing.T) {
 	var built []string
 	r := &mksNodegroupV2Resource{mksV2Provided{config: &Config{

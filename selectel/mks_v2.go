@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -14,6 +15,7 @@ import (
 	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -95,6 +97,39 @@ func mksV2ProjectID(attr types.String, config *Config) (string, diag.Diagnostics
 	return "", diags
 }
 
+// mksV2KeystoneProjectID returns the project ID in the form Keystone scopes a
+// token by: lower-case hex without dashes. mk-api-v2 returns project_id as a
+// dashed UUID, and Keystone answers 401 for that form.
+func mksV2KeystoneProjectID(projectID string) string {
+	return strings.ToLower(strings.ReplaceAll(projectID, "-", ""))
+}
+
+// mksV2SameProject reports whether two project IDs name the same project.
+func mksV2SameProject(a, b string) bool {
+	return mksV2KeystoneProjectID(a) == mksV2KeystoneProjectID(b)
+}
+
+// mksV2SameProjectID plans the state project_id for a configured one that
+// names the same project in another form, see mksV2KeystoneProjectID.
+type mksV2SameProjectID struct{}
+
+func (m mksV2SameProjectID) Description(_ context.Context) string {
+	return "A project ID that differs only in dashes or letter case keeps the state value."
+}
+
+func (m mksV2SameProjectID) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m mksV2SameProjectID) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.StateValue.IsNull() || req.PlanValue.IsUnknown() || req.PlanValue.IsNull() {
+		return
+	}
+	if mksV2SameProject(req.PlanValue.ValueString(), req.StateValue.ValueString()) {
+		resp.PlanValue = req.StateValue
+	}
+}
+
 // mksV2Provided holds the provider Config for the _v2 resources and data
 // sources.
 type mksV2Provided struct {
@@ -121,7 +156,8 @@ func (p *mksV2Provided) configure(providerData any) diag.Diagnostics {
 	return diags
 }
 
-// client resolves the project ID and builds the mk-api-v2 client for it.
+// client resolves the project ID and builds the mk-api-v2 client for its
+// Keystone form. It returns the project ID as resolved, for the state.
 func (p *mksV2Provided) client(ctx context.Context, projectIDAttr types.String, pool string) (*mksv2.ServiceClient, string, diag.Diagnostics) {
 	projectID, diags := mksV2ProjectID(projectIDAttr, p.config)
 	if diags.HasError() {
@@ -132,7 +168,7 @@ func (p *mksV2Provided) client(ctx context.Context, projectIDAttr types.String, 
 	if p.config.mksV2Client != nil {
 		clientFn = p.config.mksV2Client
 	}
-	client, err := clientFn(ctx, p.config, projectID, pool)
+	client, err := clientFn(ctx, p.config, mksV2KeystoneProjectID(projectID), pool)
 	if err != nil {
 		diags.AddError("Error initializing MKS client", err.Error())
 

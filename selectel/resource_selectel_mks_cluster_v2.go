@@ -195,7 +195,7 @@ func (r *mksClusterV2Resource) Schema(ctx context.Context, _ resource.SchemaRequ
 				Optional:      true,
 				Computed:      true,
 				Description:   projectIDDescription + " " + projectIDFromProvider + " " + projectIDFromResource + " " + projectIDLearnMore,
-				PlanModifiers: replaceString,
+				PlanModifiers: append([]planmodifier.String{mksV2SameProjectID{}}, replaceString...),
 			},
 			"kube_version": schema.StringAttribute{
 				Required: true,
@@ -473,6 +473,8 @@ func (r *mksClusterV2Resource) Create(ctx context.Context, req resource.CreateRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// The state keeps the project as configured, see fromAPI.
+	plan.ProjectID = types.StringValue(projectID)
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1073,7 +1075,9 @@ func (m *mksClusterV2Model) fromAPI(ctx context.Context, c *mksclient.ClusterDet
 		m.Name = prior.Name
 	}
 	m.Pool = types.StringValue(c.Pool)
-	if c.ProjectId != "" {
+	if c.ProjectId != "" && !mksV2SameProject(prior.ProjectID.ValueString(), c.ProjectId) {
+		// The API returns the project dashed, Keystone takes it without
+		// dashes, so the configured form is kept, see mksV2KeystoneProjectID.
 		m.ProjectID = types.StringValue(c.ProjectId)
 	}
 	if !applied {

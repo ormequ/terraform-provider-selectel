@@ -67,21 +67,29 @@ func TestMKSKubeconfigV2DataSourceBasic(t *testing.T) {
 
 func TestMKSKubeconfigV2DataSourceProviderProjectID(t *testing.T) {
 	t.Parallel()
-	fake := newMKSV2Fake(t)
-	fake.seedCluster(mksclient.ClusterDetailed{Id: testMKSV2ClusterID}, testMKSKubeconfigV2)
 
-	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: fake.providerFactories(),
-		Steps: []resource.TestStep{
-			{
-				Config: testMKSKubeconfigV2Basic("provider-project", ""),
-				Check: resource.TestCheckResourceAttr(
-					"data.selectel_mks_kubeconfig_v2.kubeconfig_tf_test_1", "project_id", "provider-project"),
-			},
-		},
-	})
+	// The dashed provider project is the form mk-api-v2 returns: the data
+	// source keeps it, the client takes it without dashes.
+	for _, providerProject := range []string{"provider-project", testMKSV2APIProject} {
+		t.Run(providerProject, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+			fake.seedCluster(mksclient.ClusterDetailed{Id: testMKSV2ClusterID}, testMKSKubeconfigV2)
 
-	fake.checkClients(t, "provider-project")
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				Steps: []resource.TestStep{
+					{
+						Config: testMKSKubeconfigV2Basic(providerProject, ""),
+						Check: resource.TestCheckResourceAttr(
+							"data.selectel_mks_kubeconfig_v2.kubeconfig_tf_test_1", "project_id", providerProject),
+					},
+				},
+			})
+
+			fake.checkClients(t, mksV2KeystoneProjectID(providerProject))
+		})
+	}
 }
 
 func TestMKSKubeconfigV2DataSourceAPIErrors(t *testing.T) {

@@ -852,7 +852,7 @@ func (r *mksNodegroupV2Resource) checkMovedProject(ctx context.Context, private 
 	if r.config != nil {
 		providerProject = r.config.ProjectID
 	}
-	if providerProject != movedProject {
+	if !mksV2SameProject(providerProject, movedProject) {
 		diags.AddError("Error reading node group", fmt.Sprintf("provider project %q is not the node group's project %q "+
 			"(moved from _v1): set project_id of the provider to %q", providerProject, movedProject, movedProject))
 	}

@@ -712,15 +712,23 @@ func (r *mksClusterV2Resource) Delete(ctx context.Context, req resource.DeleteRe
 	defer cancel()
 
 	clusterID := state.ID.ValueString()
-	waiter, err := newMKSV2TaskWaiter(ctx, client, clusterID, "")
-	if isMKSV2NotFound(err) {
-		return
+	err := mksV2WaitDeletable(ctx, func() ([]mksV2Status, error) {
+		c, err := cluster.Get(ctx, client, clusterID)
+		if err != nil {
+			return nil, err
+		}
+
+		return []mksV2Status{{object: objectCluster, status: string(c.Status), accepted: mksV2ClusterDeleteStatuses}}, nil
+	})
+	var waiter *mksV2TaskWaiter
+	if err == nil {
+		waiter, err = newMKSV2TaskWaiter(ctx, client, clusterID, "")
 	}
 	if err == nil {
 		err = cluster.Delete(ctx, client, clusterID)
-		if isMKSV2NotFound(err) {
-			return
-		}
+	}
+	if isMKSV2NotFound(err) {
+		return
 	}
 	if err == nil {
 		err = waiter.WaitClusterDeleted(ctx)

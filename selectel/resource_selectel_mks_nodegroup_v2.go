@@ -939,17 +939,35 @@ func (r *mksNodegroupV2Resource) Delete(ctx context.Context, req resource.Delete
 	defer cancel()
 
 	clusterID, nodegroupID := state.ClusterID.ValueString(), state.nodegroupID()
-	waiter, err := func() (*mksV2TaskWaiter, error) {
-		selMutexKV.Lock(clusterID)
-		defer selMutexKV.Unlock(clusterID)
-
-		waiter, err := newMKSV2TaskWaiter(ctx, client, clusterID, nodegroupID)
+	err := mksV2WaitDeletable(ctx, func() ([]mksV2Status, error) {
+		ng, err := nodegroup.Get(ctx, client, clusterID, nodegroupID)
+		if err != nil {
+			return nil, err
+		}
+		c, err := cluster.Get(ctx, client, clusterID)
 		if err != nil {
 			return nil, err
 		}
 
-		return waiter, nodegroup.Delete(ctx, client, clusterID, nodegroupID)
-	}()
+		return []mksV2Status{
+			{object: objectCluster, status: string(c.Status), accepted: mksV2NodegroupDeleteClusterStatuses},
+			{object: objectNodegroup, status: string(ng.Status), accepted: mksV2NodegroupDeleteStatuses},
+		}, nil
+	})
+	var waiter *mksV2TaskWaiter
+	if err == nil {
+		waiter, err = func() (*mksV2TaskWaiter, error) {
+			selMutexKV.Lock(clusterID)
+			defer selMutexKV.Unlock(clusterID)
+
+			waiter, err := newMKSV2TaskWaiter(ctx, client, clusterID, nodegroupID)
+			if err != nil {
+				return nil, err
+			}
+
+			return waiter, nodegroup.Delete(ctx, client, clusterID, nodegroupID)
+		}()
+	}
 	if isMKSV2NotFound(err) {
 		return
 	}

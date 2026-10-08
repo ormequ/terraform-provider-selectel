@@ -915,13 +915,17 @@ func TestMKSClusterV2ResourceCreateTimeout(t *testing.T) {
 					},
 					{
 						// The timed-out cluster is in state, tainted: the
-						// next apply deletes it and creates a new one.
+						// next apply deletes it and creates a new one. The
+						// create goes on in the API, so the delete waits until
+						// the cluster leaves PENDING_CREATE instead of getting
+						// 409.
 						PreConfig: func() {
 							calls := fake.callCount(mksV2RouteCreateCluster)
 							if calls != 1 {
 								t.Errorf("the failed apply sent %d create requests, want 1", calls)
 							}
 							fake.stickTasks("CREATE_CLUSTER", false)
+							fake.settleAfter(testMKSV2ClusterID, 3, "ACTIVE")
 							fake.fail(mksV2RouteCluster, 0)
 						},
 						Config: config,
@@ -932,6 +936,87 @@ func TestMKSClusterV2ResourceCreateTimeout(t *testing.T) {
 						),
 					},
 				},
+			})
+		})
+	}
+}
+
+func TestMKSClusterV2ResourceDeleteWaitsForStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status string
+		// settle is the status the cluster reaches on its own after a few
+		// GETs; an empty one removes the cluster. Without it the status stays.
+		settle    *string
+		wantError string
+		// wantDeletes is the number of DELETE requests the destroy sends.
+		wantDeletes int
+	}{
+		{name: "pending create ends", status: "PENDING_CREATE", settle: new("ACTIVE"), wantDeletes: 1},
+		{name: "error deletes at once", status: "ERROR", wantDeletes: 1},
+		{name: "maintenance deletes at once", status: "MAINTENANCE", wantDeletes: 1},
+		{name: "gone while waiting", status: "PENDING_CREATE", settle: new("")},
+		{
+			name:      "still pending at the timeout",
+			status:    "PENDING_CREATE",
+			wantError: `Error deleting cluster(?s:.*)cluster status PENDING_CREATE does not allow the delete yet(?s:.*)context deadline exceeded`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+
+			config := testMKSClusterV2Config("", `
+  project_id   = "attribute-project"
+  kube_version = "1.30.3"
+  workers_type = "CLOUD"
+  timeouts {
+    delete = "1s"
+  }
+`)
+			steps := []resource.TestStep{
+				{Config: config},
+				{
+					PreConfig: func() {
+						fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) {
+							c.Status = mksclient.ClusterDetailedStatus(tt.status)
+						})
+						if tt.settle != nil {
+							fake.settleAfter(testMKSV2ClusterID, 3, *tt.settle)
+						}
+					},
+					Config:  config,
+					Destroy: true,
+				},
+			}
+			if tt.wantError != "" {
+				steps[1].ExpectError = testMKSClusterV2Error(tt.wantError)
+				// The cluster stays in state; the post-test destroy deletes
+				// it once it is ACTIVE.
+				steps = append(steps, resource.TestStep{
+					PreConfig: func() {
+						calls := fake.callCount(mksV2RouteDeleteCluster)
+						if calls != 0 {
+							t.Errorf("the timed-out destroy sent %d delete requests, want 0", calls)
+						}
+						fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) { c.Status = "ACTIVE" })
+					},
+					Config: config,
+				})
+				tt.wantDeletes = 1
+			}
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy: resource.ComposeTestCheckFunc(
+					testMKSClusterV2Destroyed(fake),
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RouteDeleteCluster: tt.wantDeletes}),
+				),
+				Steps: steps,
 			})
 		})
 	}

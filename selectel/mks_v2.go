@@ -458,6 +458,52 @@ func isMKSV2NotFound(err error) bool {
 	return errors.As(err, &mksErr) && mksErr.StatusCode == http.StatusNotFound
 }
 
+// The statuses mk-api-v2 deletes in, see mk-lib status.ValidStatusesForDeleteCluster
+// and status.ValidStatusesForDeleteNodegroup. Any other status answers 409.
+var (
+	mksV2ClusterDeleteStatuses          = []string{"ACTIVE", "MAINTENANCE", "ERROR"}
+	mksV2NodegroupDeleteClusterStatuses = []string{"ACTIVE", "PENDING_UPDATE_CONTROL_PLANE_LOGS"}
+	mksV2NodegroupDeleteStatuses        = []string{"ACTIVE", "ERROR"}
+)
+
+// mksV2Status is the status of an object and the statuses a delete takes.
+type mksV2Status struct {
+	object   string
+	status   string
+	accepted []string
+}
+
+// mksV2WaitDeletable polls get until every status is one the delete takes,
+// so a delete right after an interrupted create waits for the create to end
+// instead of failing with 409. ERROR never changes on its own: it ends the
+// wait, and the delete answers for it.
+func mksV2WaitDeletable(ctx context.Context, get func() ([]mksV2Status, error)) error {
+	var unsettled []string
+	err := mksV2Poll(ctx, func() (bool, error) {
+		statuses, err := get()
+		if err != nil {
+			return false, err
+		}
+
+		unsettled = unsettled[:0]
+		for _, s := range statuses {
+			if s.status == "ERROR" {
+				return true, nil
+			}
+			if !slices.Contains(s.accepted, s.status) {
+				unsettled = append(unsettled, s.object+" status "+s.status)
+			}
+		}
+
+		return len(unsettled) == 0, nil
+	})
+	if err != nil && len(unsettled) > 0 {
+		return fmt.Errorf("%s does not allow the delete yet: %w", strings.Join(unsettled, ", "), err)
+	}
+
+	return err
+}
+
 // mksV2TaskWaiter waits for the tasks one mutating mk-api-v2 call created.
 // The API returns no task ID: its handlers insert the task rows in the same
 // transaction before they respond, so the call's tasks are the ones listed

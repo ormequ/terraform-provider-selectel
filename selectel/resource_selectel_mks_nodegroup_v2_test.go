@@ -1,6 +1,7 @@
 package selectel
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -195,13 +196,17 @@ func TestMKSNodegroupV2ResourceCreateTimeout(t *testing.T) {
 					},
 					{
 						// The timed-out nodegroup is in state, tainted: the
-						// next apply deletes it and creates a new one.
+						// next apply deletes it and creates a new one. The
+						// create goes on in the API, so the delete waits until
+						// the nodegroup leaves PENDING_CREATE instead of
+						// getting 409.
 						PreConfig: func() {
 							calls := fake.callCount(mksV2RouteCreateNodegroups)
 							if calls != 1 {
 								t.Errorf("the failed apply sent %d create requests, want 1", calls)
 							}
 							fake.stickTasks("CLUSTER_RESIZE", false)
+							fake.settleAfter("ng-1", 3, "ACTIVE")
 							fake.fail(mksV2RouteNodegroup, 0)
 						},
 						Config: config,
@@ -599,6 +604,8 @@ func TestMKSNodegroupV2ResourceStatusFromAPI(t *testing.T) {
 			status(mksclient.NodegroupDetailedStatusPENDINGNODEREINSTALL),
 			// A status the client does not know yet passes through as well.
 			status("PENDING_SOMETHING_NEW"),
+			// Destroy waits for a status the delete takes.
+			status(mksclient.NodegroupDetailedStatusACTIVE),
 		},
 	})
 }
@@ -820,6 +827,93 @@ func TestMKSNodegroupV2ResourceRemovedOutside(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestMKSNodegroupV2ResourceDeleteWaitsForStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// clusterStatus and nodegroupStatus are set before the destroy; an
+		// empty one keeps ACTIVE.
+		clusterStatus, nodegroupStatus string
+		// settleID reaches settle on its own after a few GETs; an empty
+		// settle removes it. Without settleID the statuses stay.
+		settleID, settle string
+		wantError        string
+		// wantDeletes is the number of DELETE requests the test sends.
+		wantDeletes int
+	}{
+		{name: "nodegroup pending create ends", nodegroupStatus: "PENDING_CREATE", settleID: "ng-1", settle: "ACTIVE", wantDeletes: 1},
+		{name: "cluster pending upgrade ends", clusterStatus: "PENDING_UPGRADE", settleID: testMKSV2ClusterID, settle: "ACTIVE", wantDeletes: 1},
+		{name: "nodegroup error deletes at once", nodegroupStatus: "ERROR", wantDeletes: 1},
+		{name: "nodegroup gone while waiting", nodegroupStatus: "PENDING_SCALE_UP", settleID: "ng-1"},
+		{
+			name:          "cluster error is left to the API",
+			clusterStatus: "ERROR",
+			wantError:     `Error deleting node group(?s:.*)cluster or one of nodegroups has invalid status`,
+			wantDeletes:   2,
+		},
+		{
+			name:            "still pending at the timeout",
+			nodegroupStatus: "PENDING_SCALE_UP",
+			wantError:       `Error deleting node group(?s:.*)nodegroup status PENDING_SCALE_UP does not allow the delete yet(?s:.*)context deadline exceeded`,
+			wantDeletes:     1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newMKSV2Fake(t)
+			testMKSNodegroupV2SeedCluster(fake, mksclient.ClusterDetailedNetworkTypeSTANDARD)
+
+			setStatuses := func(clusterStatus, nodegroupStatus string) {
+				fake.updateCluster(testMKSV2ClusterID, func(c *mksclient.ClusterDetailed) {
+					c.Status = mksclient.ClusterDetailedStatus(cmp.Or(clusterStatus, "ACTIVE"))
+				})
+				fake.updateNodegroup("ng-1", func(ng *mksclient.NodegroupDetailed) {
+					ng.Status = mksclient.NodegroupDetailedStatus(cmp.Or(nodegroupStatus, "ACTIVE"))
+				})
+			}
+			config := testMKSNodegroupV2Config(testMKSNodegroupV2Flavor + `
+  timeouts {
+    delete = "1s"
+  }
+`)
+			steps := []resource.TestStep{
+				{Config: config},
+				{
+					PreConfig: func() {
+						setStatuses(tt.clusterStatus, tt.nodegroupStatus)
+						if tt.settleID != "" {
+							fake.settleAfter(tt.settleID, 3, tt.settle)
+						}
+					},
+					Config:  config,
+					Destroy: true,
+				},
+			}
+			if tt.wantError != "" {
+				steps[1].ExpectError = testMKSClusterV2Error(tt.wantError)
+				// The nodegroup stays in state; the post-test destroy deletes
+				// it once both are ACTIVE.
+				steps = append(steps, resource.TestStep{
+					PreConfig: func() { setStatuses("", "") },
+					Config:    config,
+				})
+			}
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: fake.providerFactories(),
+				CheckDestroy: resource.ComposeTestCheckFunc(
+					testMKSNodegroupV2Destroyed(fake, "ng-1"),
+					testMKSClusterV2Calls(fake, map[string]int{mksV2RouteDeleteNodegroup: tt.wantDeletes}),
+				),
+				Steps: steps,
+			})
+		})
+	}
 }
 
 func TestMKSNodegroupV2ResourceDeleteTaskError(t *testing.T) {
@@ -1062,7 +1156,9 @@ const testMKSNodegroupV2Flavor = `
 `
 
 func testMKSNodegroupV2SeedCluster(fake *mksV2Fake, networkType mksclient.ClusterDetailedNetworkType) {
-	fake.seedCluster(mksclient.ClusterDetailed{Id: testMKSV2ClusterID, Pool: testMKSV2Pool, NetworkType: networkType}, "")
+	fake.seedCluster(mksclient.ClusterDetailed{
+		Id: testMKSV2ClusterID, Pool: testMKSV2Pool, NetworkType: networkType, Status: "ACTIVE",
+	}, "")
 }
 
 // testMKSNodegroupV2Config is a nodegroup in the seeded cluster with the

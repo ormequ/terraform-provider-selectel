@@ -61,6 +61,9 @@ type mksV2Fake struct {
 	failedTaskTypes map[string]bool
 	// stuckTaskTypes keeps the running tasks of a type running.
 	stuckTaskTypes map[string]bool
+	// settles maps a cluster or nodegroup ID to the GETs it answers before
+	// its status changes on its own, like after a task the API keeps running.
+	settles map[string]mksV2FakeSettle
 	// x509CACertificates keeps what PATCH stored; the API never returns it.
 	x509CACertificates map[string]string
 	// pricePlans are what the dedicated servers API lists.
@@ -84,6 +87,13 @@ type mksV2Fake struct {
 type mksV2FakeBody struct {
 	contentType string
 	body        string
+}
+
+// mksV2FakeSettle is the status an object reaches after gets more GETs; an
+// empty status removes the object.
+type mksV2FakeSettle struct {
+	gets   int
+	status string
 }
 
 type mksV2FakeTask struct {
@@ -151,6 +161,7 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 
 		failedTaskTypes:    map[string]bool{},
 		stuckTaskTypes:     map[string]bool{},
+		settles:            map[string]mksV2FakeSettle{},
 		x509CACertificates: map[string]string{},
 		queries:            map[string]string{},
 		bodies:             map[string][]byte{},
@@ -287,6 +298,9 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 
 func (f *mksV2Fake) getCluster(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
+	if status, settled := f.settle(id); settled {
+		f.updateClusterLocked(id, status)
+	}
 	c, ok := f.clusters[id]
 	if !ok {
 		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
@@ -348,7 +362,7 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 		EnablePatchVersionAutoUpgrade: valueOr(opts.EnablePatchVersionAutoUpgrade, clusterType != mksclient.BASIC),
 		CniType:                       cniType,
 		KubeApiIp:                     "192.0.2.10",
-		Status:                        "CREATING",
+		Status:                        "PENDING_CREATE",
 	}
 	setMKSV2FakeWindow(&c, cmp.Or(opts.MaintenanceWindowStart, "03:00:00"))
 	if cniType == mksclient.ClusterDetailedCniType(mksclient.ClusterCniTypeCILIUM) {
@@ -496,12 +510,25 @@ func (f *mksV2Fake) activateCluster(id string) func() {
 	}
 }
 
-// deleteCluster removes the cluster when DELETE_CLUSTER is DONE.
+// deleteCluster removes the cluster when DELETE_CLUSTER is DONE. Like
+// mk-api-v2 handlers/clusters/delete.go:99-113 it answers 409 unless the
+// cluster and its nodegroups are in a status the delete takes.
 func (f *mksV2Fake) deleteCluster(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
-	_, ok := f.clusters[id]
+	c, ok := f.clusters[id]
 	if !ok {
 		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
+
+		return
+	}
+	deletable := slices.Contains([]string{"ACTIVE", "MAINTENANCE", "ERROR"}, string(c.Status))
+	for _, ng := range f.nodegroups {
+		if ng.ClusterId == id && !mksV2FakeNodegroupDeletable(ng) {
+			deletable = false
+		}
+	}
+	if !deletable {
+		writeMKSV2InvalidStatus(w)
 
 		return
 	}
@@ -574,7 +601,7 @@ func (f *mksV2Fake) listTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // getTask finishes a running task: DONE with its effect, or ERROR for a type
-// set by failTasks.
+// set by failTasks, which also sets its nodegroup or cluster to ERROR.
 func (f *mksV2Fake) getTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	taskID := r.PathValue("task_id")
@@ -599,6 +626,12 @@ func (f *mksV2Fake) getTask(w http.ResponseWriter, r *http.Request) {
 		t.task.Status = mksclient.ERROR
 		t.task.ErrorDetails = &mksclient.TaskErrorDetails{
 			Code: 42, Name: "fake failure", Details: new("fake details of " + t.task.Type),
+		}
+		// A failed task leaves its object in ERROR, which a delete takes.
+		if t.task.NodegroupId != nil {
+			f.updateNodegroupLocked(*t.task.NodegroupId, "ERROR")
+		} else {
+			f.updateClusterLocked(id, "ERROR")
 		}
 	default:
 		t.task.Status = mksclient.DONE
@@ -702,6 +735,48 @@ func (f *mksV2Fake) removeCluster(id string) {
 	defer f.mu.Unlock()
 
 	delete(f.clusters, id)
+}
+
+// settleAfter makes the cluster or nodegroup id change to status on its own
+// after it has answered gets more GETs; an empty status removes it.
+func (f *mksV2Fake) settleAfter(id string, gets int, status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.settles[id] = mksV2FakeSettle{gets: gets, status: status}
+}
+
+// settle counts a GET of id and reports the status it reaches with it.
+func (f *mksV2Fake) settle(id string) (string, bool) {
+	s, ok := f.settles[id]
+	if !ok {
+		return "", false
+	}
+	s.gets--
+	if s.gets > 0 {
+		f.settles[id] = s
+
+		return "", false
+	}
+	delete(f.settles, id)
+
+	return s.status, true
+}
+
+// updateClusterLocked sets the cluster status, or removes the cluster when
+// status is empty.
+func (f *mksV2Fake) updateClusterLocked(id, status string) {
+	c, ok := f.clusters[id]
+	if !ok {
+		return
+	}
+	if status == "" {
+		delete(f.clusters, id)
+
+		return
+	}
+	c.Status = mksclient.ClusterDetailedStatus(status)
+	f.clusters[id] = c
 }
 
 // setMKSV2FakeWindow sets a three-hour maintenance window.
@@ -899,6 +974,15 @@ func writeMKSV2Error(w http.ResponseWriter, status int, objectType, id string) {
 	var body mksclient.GenericError
 	body.Error.Message = fmt.Sprintf("fake error %d", status)
 	writeMKSV2JSON(w, status, body)
+}
+
+// writeMKSV2InvalidStatus answers like mk-api-v2 when the cluster or a
+// nodegroup is in a status the operation does not take
+// (domain.ErrorClusterOrNodegroupInvalidStatus).
+func writeMKSV2InvalidStatus(w http.ResponseWriter) {
+	var body mksclient.GenericError
+	body.Error.Message = "cluster or one of nodegroups has invalid status to perform this operation"
+	writeMKSV2JSON(w, http.StatusConflict, body)
 }
 
 // writeMKSV2BadRequest answers a rejected request body with the API message.
@@ -1100,6 +1184,10 @@ func (f *mksV2Fake) nodegroup(w http.ResponseWriter, r *http.Request) (mksclient
 // getNodegroup returns the segment as availability_zone only, like mk-api-v2;
 // the list returns it as segment.
 func (f *mksV2Fake) getNodegroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("nodegroup_id")
+	if status, settled := f.settle(id); settled {
+		f.updateNodegroupLocked(id, status)
+	}
 	ng, ok := f.nodegroup(w, r)
 	if ok {
 		segment := ng.Segment
@@ -1189,9 +1277,17 @@ func (f *mksV2Fake) resizeNodegroup(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteNodegroup removes the nodegroup when its CLUSTER_RESIZE task is DONE.
+// Like mk-api-v2 handlers/nodegroups/delete.go:143-149 it answers 409 unless
+// the cluster and the nodegroup are in a status the delete takes.
 func (f *mksV2Fake) deleteNodegroup(w http.ResponseWriter, r *http.Request) {
 	ng, ok := f.nodegroup(w, r)
 	if !ok {
+		return
+	}
+	clusterStatus := string(f.clusters[ng.ClusterId].Status)
+	if !slices.Contains([]string{"ACTIVE", "PENDING_UPDATE_CONTROL_PLANE_LOGS"}, clusterStatus) || !mksV2FakeNodegroupDeletable(ng) {
+		writeMKSV2InvalidStatus(w)
+
 		return
 	}
 
@@ -1200,6 +1296,12 @@ func (f *mksV2Fake) deleteNodegroup(w http.ResponseWriter, r *http.Request) {
 	id := ng.Id
 	f.addNodegroupTask(ng.ClusterId, id, "CLUSTER_RESIZE", func() { delete(f.nodegroups, id) })
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// mksV2FakeNodegroupDeletable reports whether a delete takes the nodegroup
+// status, see mk-lib status.ValidStatusesForDeleteNodegroup.
+func mksV2FakeNodegroupDeletable(ng mksclient.NodegroupDetailed) bool {
+	return ng.Status == mksclient.NodegroupDetailedStatusACTIVE || ng.Status == mksclient.NodegroupDetailedStatusERROR
 }
 
 func (f *mksV2Fake) addNodegroupTask(clusterID, nodegroupID, taskType string, effect func()) {
@@ -1248,6 +1350,22 @@ func (f *mksV2Fake) updateNodegroup(id string, update func(ng *mksclient.Nodegro
 
 	ng := f.nodegroups[id]
 	update(&ng)
+	f.nodegroups[id] = ng
+}
+
+// updateNodegroupLocked sets the nodegroup status, or removes the nodegroup
+// when status is empty.
+func (f *mksV2Fake) updateNodegroupLocked(id, status string) {
+	ng, ok := f.nodegroups[id]
+	if !ok {
+		return
+	}
+	if status == "" {
+		delete(f.nodegroups, id)
+
+		return
+	}
+	ng.Status = mksclient.NodegroupDetailedStatus(status)
 	f.nodegroups[id] = ng
 }
 

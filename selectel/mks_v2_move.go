@@ -113,7 +113,7 @@ var mksV2TimeoutsAttrTypes = map[string]attr.Type{
 // reports that the move is not supported.
 func mksV2MoveSource(req resource.MoveStateRequest, typeName string, v any, diags *diag.Diagnostics) bool {
 	parts := strings.Split(req.SourceProviderAddress, "/")
-	if req.SourceTypeName != typeName || parts[len(parts)-1] != "selectel" || req.SourceRawState == nil {
+	if req.SourceTypeName != typeName || parts[len(parts)-1] != providerTypeName || req.SourceRawState == nil {
 		return false
 	}
 

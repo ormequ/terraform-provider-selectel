@@ -6,7 +6,7 @@ description: |-
 
 # Migrating Managed Kubernetes resources from _v1 to _v2
 
-`selectel_mks_cluster_v2` and `selectel_mks_nodegroup_v2` manage Managed Kubernetes clusters and cloud node groups through API v2. They work with the same clusters and node groups as `selectel_mks_cluster_v1` and `selectel_mks_nodegroup_v1`, so you can switch an existing cluster to the `_v2` resources without recreating it:
+`selectel_mks_cluster_v2` and `selectel_mks_nodegroup_v2` manage Managed Kubernetes clusters and node groups through API v2. They work with the same clusters and cloud node groups as `selectel_mks_cluster_v1` and `selectel_mks_nodegroup_v1`, so you can switch an existing cluster to the `_v2` resources without recreating it:
 
 - in Terraform 1.8.0 and later, with [`moved` blocks](https://developer.hashicorp.com/terraform/language/moved) — the provider converts the `_v1` state itself;
 - in earlier versions, by removing the `_v1` resources from the state and importing the `_v2` ones.
@@ -55,7 +55,7 @@ Before you start, upgrade to a provider version that has the `_v2` resources and
 | `nodes_count` | `nodes_count` | |
 | `flavor_id`, `cpus`, `ram_mb`, `volume_gb`, `volume_type`, `local_volume`, `affinity_policy` | `cloud_nodegroup_config = { ... }` | The same names inside the nested attribute. |
 | `keypair_name` | — | Removed: API v2 ignores it. Remove it from the configuration. |
-| — | `cidr` | For dedicated node groups only, which `selectel_mks_nodegroup_v2` does not support yet: setting it fails the plan. Do not set it. |
+| — | `cidr` | For dedicated node groups only. A `_v1` node group is a cloud one, so setting it fails the plan. Do not set it. |
 | `labels` | `labels` | |
 | `taints { ... }` | `taints = [{ ... }]` | A list of objects instead of repeated blocks. |
 | `enable_autoscale`, `autoscale_min_nodes`, `autoscale_max_nodes` | the same | |

@@ -1,3 +1,16 @@
+## Unreleased
+
+FEATURES:
+
+* Add new resources:
+  * `selectel_mks_cluster_v2`
+  * `selectel_mks_nodegroup_v2`, with cloud node groups
+* Add new data sources:
+  * `selectel_mks_kubeconfig_v2`
+  * `selectel_mks_kube_versions_v2`
+  * `selectel_mks_feature_gates_v2`
+  * `selectel_mks_admission_controllers_v2`
+
 ## 9.0.0 (October 12, 2026)
 
 BREAKING CHANGES:

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -37,18 +39,44 @@ import (
 )
 
 var (
-	_ resource.ResourceWithConfigure      = &mksNodegroupV2Resource{}
-	_ resource.ResourceWithIdentity       = &mksNodegroupV2Resource{}
-	_ resource.ResourceWithImportState    = &mksNodegroupV2Resource{}
-	_ resource.ResourceWithModifyPlan     = &mksNodegroupV2Resource{}
-	_ resource.ResourceWithMoveState      = &mksNodegroupV2Resource{}
-	_ resource.ResourceWithValidateConfig = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithConfigure        = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithConfigValidators = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithIdentity         = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithImportState      = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithModifyPlan       = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithMoveState        = &mksNodegroupV2Resource{}
+	_ resource.ResourceWithValidateConfig   = &mksNodegroupV2Resource{}
 )
 
 var mksNodegroupV2Docs = resourceDocs{Name: "node group"}
 
-// mksNodegroupV2SegmentRegexp matches a pool segment such as ru-3a.
+// mksNodegroupV2SegmentRegexp matches a pool segment such as ru-3a. The
+// segment of a dedicated node group is a dedicated server location such as
+// SPB-3 instead.
 var mksNodegroupV2SegmentRegexp = regexp.MustCompile(`^[a-z]+-\d+[a-z]$`)
+
+// mksNodegroupV2UUIDRegexp matches the UUIDs mk-api-v2 requires for
+// service_uuid (validate/nodegroup.go:328).
+var mksNodegroupV2UUIDRegexp = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+const (
+	// mksNodegroupV2DedicatedMinRootSizeGB is minDedicatedRootSize of
+	// mk-api-v2 validate/nodegroup.go:30.
+	mksNodegroupV2DedicatedMinRootSizeGB = 30
+	// mksNodegroupV2DedicatedMinNodes is the default
+	// min_nodes_per_dedicated_group of mk-api-v2 config/config.go:59.
+	mksNodegroupV2DedicatedMinNodes = 1
+	// mksNodegroupV2DedicatedCreateTimeout covers the waits mk-cluster-bm
+	// allows itself for one dedicated node group: 60m for the servers to
+	// become active, 20m for the network, 60m for the reinstall and a 15m
+	// pause after it (internal/pkg/actions/dedicated/create_dedicated_nodegroup.go:37-39,
+	// setup_servers.go:41, common.go:106 with config.go:229-230), plus the
+	// Kubernetes setup of the nodes.
+	mksNodegroupV2DedicatedCreateTimeout = 160 * time.Minute
+	// mksNodegroupV2DedicatedCIDRSize is the only prefix length mk-api-v2
+	// accepts for the cidr of a dedicated node group (validate/network.go:30).
+	mksNodegroupV2DedicatedCIDRSize = 24
+)
 
 var (
 	mksNodegroupV2TaintAttrTypes = map[string]attr.Type{
@@ -70,6 +98,14 @@ var (
 		"local_volume":    types.BoolType,
 		"affinity_policy": types.StringType,
 	}
+	mksNodegroupV2DedicatedConfigAttrTypes = map[string]attr.Type{
+		"service_uuid":             types.StringType,
+		"price_plan_name":          types.StringType,
+		"price_plan_uuid":          types.StringType,
+		"root_size_gb":             types.Int64Type,
+		"create_storage_partition": types.BoolType,
+		"currency":                 types.StringType,
+	}
 )
 
 type mksNodegroupV2Model struct {
@@ -87,6 +123,7 @@ type mksNodegroupV2Model struct {
 	InstallNvidiaDevicePlugin types.Bool     `tfsdk:"install_nvidia_device_plugin"`
 	Preemptible               types.Bool     `tfsdk:"preemptible"`
 	CloudNodegroupConfig      types.Object   `tfsdk:"cloud_nodegroup_config"`
+	DedicatedNodegroupConfig  types.Object   `tfsdk:"dedicated_nodegroup_config"`
 	NodegroupType             types.String   `tfsdk:"nodegroup_type"`
 	Status                    types.String   `tfsdk:"status"`
 	Nodes                     types.List     `tfsdk:"nodes"`
@@ -122,6 +159,15 @@ type mksNodegroupV2CloudConfigModel struct {
 	VolumeType     types.String `tfsdk:"volume_type"`
 	LocalVolume    types.Bool   `tfsdk:"local_volume"`
 	AffinityPolicy types.String `tfsdk:"affinity_policy"`
+}
+
+type mksNodegroupV2DedicatedConfigModel struct {
+	ServiceUUID            types.String `tfsdk:"service_uuid"`
+	PricePlanName          types.String `tfsdk:"price_plan_name"`
+	PricePlanUUID          types.String `tfsdk:"price_plan_uuid"`
+	RootSizeGB             types.Int64  `tfsdk:"root_size_gb"`
+	CreateStoragePartition types.Bool   `tfsdk:"create_storage_partition"`
+	Currency               types.String `tfsdk:"currency"`
 }
 
 type mksNodegroupV2Resource struct {
@@ -164,7 +210,7 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 	flavorPath := path.MatchRelative().AtParent().AtName("flavor_id")
 
 	resp.Schema = schema.Schema{
-		Description: "Creates and manages a Managed Kubernetes cloud node group using API v2.",
+		Description: "Creates and manages a Managed Kubernetes node group of cloud or dedicated servers using API v2.",
 		Attributes: mksNodegroupV2Docs.withFrameworkDocsHints(map[string]schema.Attribute{
 			"id": mksNodegroupV2Docs.idFrameworkResourceSchema(),
 			"cluster_id": schema.StringAttribute{
@@ -173,11 +219,10 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"segment": schema.StringAttribute{
-				Required:      true,
-				Description:   "Pool segment where all nodes of the node group are located, for example, `ru-7a`.",
+				Required: true,
+				Description: "Pool segment where all nodes of the node group are located, for example, `ru-7a`; " +
+					"for a dedicated node group, the dedicated server location, for example, `SPB-3`.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
-				Validators: []validator.String{stringvalidator.RegexMatches(mksNodegroupV2SegmentRegexp,
-					"must be a pool segment such as `ru-7a`")},
 			},
 			"nodes_count": schema.Int64Attribute{
 				Optional: true,
@@ -189,8 +234,8 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 			"cidr": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "CIDR of the node group network. Applies to dedicated node groups only, " +
-					"which this resource does not support yet, so setting it fails the plan.",
+				Description: "CIDR of the node group network, a private /24 such as `10.20.30.0/24`. " +
+					"Applies to dedicated node groups only: setting it for a cloud node group fails the plan.",
 				PlanModifiers: replaceStringUnlessImported,
 			},
 			"labels": schema.MapAttribute{
@@ -224,19 +269,19 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 			"enable_autoscale": schema.BoolAttribute{
 				Optional:      true,
 				Computed:      true,
-				Description:   "Enables autoscaling of the node group within `autoscale_min_nodes` and `autoscale_max_nodes`.",
+				Description:   "Enables autoscaling of the node group within `autoscale_min_nodes` and `autoscale_max_nodes`. Cloud node groups only.",
 				PlanModifiers: keepBool,
 			},
 			"autoscale_min_nodes": schema.Int64Attribute{
 				Optional:      true,
 				Computed:      true,
-				Description:   "Minimum number of nodes while autoscaling is enabled.",
+				Description:   "Minimum number of nodes while autoscaling is enabled. Cloud node groups only.",
 				PlanModifiers: keepInt64,
 			},
 			"autoscale_max_nodes": schema.Int64Attribute{
 				Optional:      true,
 				Computed:      true,
-				Description:   "Maximum number of nodes while autoscaling is enabled.",
+				Description:   "Maximum number of nodes while autoscaling is enabled. Cloud node groups only.",
 				PlanModifiers: keepInt64,
 			},
 			"user_data": schema.StringAttribute{
@@ -249,18 +294,20 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 				Optional: true,
 				Computed: true,
 				Description: "Installs the NVIDIA Device Plugin and GPU drivers. " +
-					"If omitted, the API enables it for flavors with GPU.",
+					"If omitted, the API enables it for flavors and dedicated servers with GPU.",
 				PlanModifiers: replaceBool,
 			},
 			"preemptible": schema.BoolAttribute{
 				Optional:      true,
 				Computed:      true,
-				Description:   "Makes the nodes preemptible.",
+				Description:   "Makes the nodes preemptible. Cloud node groups only.",
 				PlanModifiers: replaceBool,
 			},
 			"cloud_nodegroup_config": schema.SingleNestedAttribute{
-				Required:    true,
-				Description: "Cloud server configuration of the nodes. Changing any of its values recreates the node group.",
+				Optional: true,
+				Description: "Cloud server configuration of the nodes. Changing any of its values recreates the node group. " +
+					"Exactly one of cloud_nodegroup_config and dedicated_nodegroup_config is required; " +
+					"a cluster with workers_type = CLOUD accepts only this one.",
 				Attributes: map[string]schema.Attribute{
 					"flavor_id": schema.StringAttribute{
 						Optional:      true,
@@ -315,9 +362,54 @@ func (r *mksNodegroupV2Resource) Schema(ctx context.Context, _ resource.SchemaRe
 					},
 				},
 			},
+			"dedicated_nodegroup_config": schema.SingleNestedAttribute{
+				Optional: true,
+				Description: "Dedicated server configuration of the nodes. Changing any of its values recreates the node group. " +
+					"A cluster with workers_type = DEDICATED accepts only this one.",
+				Attributes: map[string]schema.Attribute{
+					"service_uuid": schema.StringAttribute{
+						Required:      true,
+						Description:   "Unique identifier of the dedicated server configuration, `configurations[].id` of selectel_dedicated_configuration_v1.",
+						PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+						Validators:    []validator.String{stringvalidator.RegexMatches(mksNodegroupV2UUIDRegexp, "must be a UUID")},
+					},
+					"price_plan_name": schema.StringAttribute{
+						Required:      true,
+						Description:   "Name of the price plan of the servers, for example, `1 day`.",
+						PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+					},
+					"price_plan_uuid": schema.StringAttribute{
+						Computed:      true,
+						Description:   "Unique identifier of the price plan that price_plan_name names.",
+						PlanModifiers: keepString,
+					},
+					"root_size_gb": schema.Int64Attribute{
+						Optional:      true,
+						Computed:      true,
+						Description:   "Size of the root partition of each server in GB, at least 30. If omitted, the API uses 100.",
+						PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown(), int64planmodifier.RequiresReplace()},
+						Validators:    []validator.Int64{int64validator.AtLeast(mksNodegroupV2DedicatedMinRootSizeGB)},
+					},
+					"create_storage_partition": schema.BoolAttribute{
+						Optional:      true,
+						Computed:      true,
+						Description:   "Creates a storage partition on the fastest disk of each server. If omitted, the API uses `true`.",
+						PlanModifiers: replaceBool,
+					},
+					"currency": schema.StringAttribute{
+						Optional:      true,
+						Computed:      true,
+						Description:   "Balance that pays for the servers ordered at create: `main` or `bonus`. If omitted, the API uses `main`. A resize always pays from `main`.",
+						PlanModifiers: replaceStringUnlessImported,
+						Validators: []validator.String{stringvalidator.OneOf(
+							string(mksclient.Main), string(mksclient.Bonus),
+						)},
+					},
+				},
+			},
 			"nodegroup_type": schema.StringAttribute{
 				Computed:      true,
-				Description:   "Type of the node group, for example, `STANDARD` or `GPU`.",
+				Description:   "Type of the node group: `STANDARD`, `GPU`, `DEDICATED` or `DEDICATED_GPU`.",
 				PlanModifiers: keepString,
 			},
 			"status": schema.StringAttribute{
@@ -358,8 +450,9 @@ func (r *mksNodegroupV2Resource) IdentitySchema(_ context.Context, _ resource.Id
 	}
 }
 
-// setIdentity is a no-op when Terraform passed no identity.
-func (m *mksNodegroupV2Model) setIdentity(ctx context.Context, identity *tfsdk.ResourceIdentity) diag.Diagnostics {
+// setIdentity is a no-op when Terraform passed no identity. pool is the one
+// the node group operations use.
+func (m *mksNodegroupV2Model) setIdentity(ctx context.Context, identity *tfsdk.ResourceIdentity, pool string) diag.Diagnostics {
 	if identity == nil {
 		return nil
 	}
@@ -367,13 +460,22 @@ func (m *mksNodegroupV2Model) setIdentity(ctx context.Context, identity *tfsdk.R
 	return identity.Set(ctx, mksNodegroupV2IdentityModel{
 		ClusterID: m.ClusterID,
 		ID:        types.StringValue(m.nodegroupID()),
-		Pool:      types.StringValue(mksNodegroupV2Pool(m.Segment.ValueString())),
+		Pool:      types.StringValue(pool),
 	})
 }
 
+// ConfigValidators mirrors mk-api-v2, which rejects both configs and neither
+// (validate/nodegroup.go:97-106).
+func (r *mksNodegroupV2Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		resourcevalidator.ExactlyOneOf(path.MatchRoot("cloud_nodegroup_config"), path.MatchRoot("dedicated_nodegroup_config")),
+	}
+}
+
 // ValidateConfig rejects the combinations the API rejects and that depend on
-// values, not only on presence (issues #273 and #300), see mk-api-v2
-// validate/nodegroup.go and validate/flavor.go.
+// values, not only on presence: cloud_nodegroup_config ones (issues #273 and
+// #300, see mk-api-v2 validate/nodegroup.go and validate/flavor.go), and
+// dedicated_nodegroup_config ones.
 func (r *mksNodegroupV2Resource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config mksNodegroupV2Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
@@ -382,8 +484,11 @@ func (r *mksNodegroupV2Resource) ValidateConfig(ctx context.Context, req resourc
 	}
 
 	if config.Count.IsNull() && !config.EnableAutoscale.IsUnknown() && !config.EnableAutoscale.ValueBool() {
-		resp.Diagnostics.AddAttributeError(path.Root("nodes_count"), "Missing node count",
-			"Set nodes_count, or enable autoscaling with enable_autoscale = true.")
+		detail := "Set nodes_count, or enable autoscaling with enable_autoscale = true."
+		if !config.DedicatedNodegroupConfig.IsNull() {
+			detail = "Set nodes_count: dedicated node groups do not support autoscaling."
+		}
+		resp.Diagnostics.AddAttributeError(path.Root("nodes_count"), "Missing node count", detail)
 	}
 	if config.EnableAutoscale.ValueBool() && (config.AutoscaleMinNodes.IsNull() || config.AutoscaleMaxNodes.IsNull()) {
 		resp.Diagnostics.AddAttributeError(path.Root("enable_autoscale"), "Missing autoscaling limits",
@@ -391,13 +496,22 @@ func (r *mksNodegroupV2Resource) ValidateConfig(ctx context.Context, req resourc
 	}
 	// The API stores a cidr as the network of a dedicated node group and
 	// validates it only for those, see mk-api-v2 handlers/nodegroups/create.go.
-	if !config.CIDR.IsNull() && !config.CIDR.IsUnknown() {
+	if !config.CIDR.IsNull() && !config.CIDR.IsUnknown() && config.DedicatedNodegroupConfig.IsNull() {
 		resp.Diagnostics.AddAttributeError(path.Root("cidr"), "Unsupported cidr",
 			"cidr applies to dedicated node groups only; remove it from a cloud node group.")
 	}
 
+	if !config.DedicatedNodegroupConfig.IsNull() && !config.DedicatedNodegroupConfig.IsUnknown() {
+		validateMKSNodegroupV2Dedicated(config, &resp.Diagnostics)
+	}
+
 	if config.CloudNodegroupConfig.IsNull() || config.CloudNodegroupConfig.IsUnknown() {
 		return
+	}
+	if !config.Segment.IsUnknown() && config.DedicatedNodegroupConfig.IsNull() &&
+		!mksNodegroupV2SegmentRegexp.MatchString(config.Segment.ValueString()) {
+		resp.Diagnostics.AddAttributeError(path.Root("segment"), "Invalid segment",
+			"A cloud node group takes a pool segment such as `ru-7a`.")
 	}
 	var cloud mksNodegroupV2CloudConfigModel
 	resp.Diagnostics.Append(config.CloudNodegroupConfig.As(ctx, &cloud, basetypes.ObjectAsOptions{UnhandledUnknownAsEmpty: true})...)
@@ -427,6 +541,76 @@ func (r *mksNodegroupV2Resource) ValidateConfig(ctx context.Context, req resourc
 	}
 }
 
+// validateMKSNodegroupV2Dedicated mirrors the checks of mk-api-v2 for a
+// dedicated node group that need no API call.
+func validateMKSNodegroupV2Dedicated(config mksNodegroupV2Model, diags *diag.Diagnostics) {
+	// A dedicated location such as SPB-3 is the segment; a pool segment is
+	// never one of the dedicated pools of a region (validate/nodegroup.go:340-349,
+	// validate/dedicated.go:75-81).
+	if !config.Segment.IsUnknown() && mksNodegroupV2SegmentRegexp.MatchString(config.Segment.ValueString()) {
+		diags.AddAttributeError(path.Root("segment"), "Invalid segment",
+			"A dedicated node group takes a dedicated server location such as `SPB-3`, not a pool segment.")
+	}
+	// The PATCH of a dedicated node group rejects any autoscale field
+	// (validate/nodegroup.go:257-263), and create ignores them
+	// (daladapter/worker_group.go:62-64).
+	for _, autoscale := range []struct {
+		name  string
+		value attr.Value
+	}{
+		{"enable_autoscale", config.EnableAutoscale},
+		{"autoscale_min_nodes", config.AutoscaleMinNodes},
+		{"autoscale_max_nodes", config.AutoscaleMaxNodes},
+	} {
+		if !autoscale.value.IsNull() {
+			diags.AddAttributeError(path.Root(autoscale.name), "Autoscaling of a dedicated node group",
+				"Dedicated node groups do not support autoscaling: remove "+autoscale.name+".")
+		}
+	}
+	// Dedicated nodes are never preemptible: the API stores false
+	// (daladapter/worker_group.go:66).
+	if config.Preemptible.ValueBool() {
+		diags.AddAttributeError(path.Root("preemptible"), "Preemptible dedicated node group",
+			"Dedicated node groups cannot be preemptible.")
+	}
+	// validate/nodegroup.go:302 with the default minimum.
+	if !config.Count.IsNull() && !config.Count.IsUnknown() && config.Count.ValueInt64() < mksNodegroupV2DedicatedMinNodes {
+		diags.AddAttributeError(path.Root("nodes_count"), "Too few nodes",
+			fmt.Sprintf("Dedicated node groups should have at least %d nodes.", mksNodegroupV2DedicatedMinNodes))
+	}
+	if !config.CIDR.IsNull() && !config.CIDR.IsUnknown() {
+		err := validateMKSNodegroupV2DedicatedCIDR(config.CIDR.ValueString())
+		if err != nil {
+			diags.AddAttributeError(path.Root("cidr"), "Invalid cidr", err.Error())
+		}
+	}
+}
+
+// validateMKSNodegroupV2DedicatedCIDR mirrors the checks of mk-api-v2
+// validate/network.go:11-34 that need no API configuration: a private, not
+// loopback /24, and also that it is the network address.
+func validateMKSNodegroupV2DedicatedCIDR(cidr string) error {
+	ip, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("%q is not a CIDR such as 10.20.30.0/24", cidr)
+	}
+	if ip.IsLoopback() || !ip.IsPrivate() {
+		return fmt.Errorf("%q must be a private network", cidr)
+	}
+	size, _ := network.Mask.Size()
+	if size != mksNodegroupV2DedicatedCIDRSize {
+		return fmt.Errorf("%q must be a /%d network", cidr, mksNodegroupV2DedicatedCIDRSize)
+	}
+	// The API stores the cidr in a PostgreSQL cidr column, which rejects host
+	// bits with a 500 that does not name the cidr (mk-dal migration
+	// 20240709164711-dedicated-nodegroup-network.sql:11).
+	if !ip.Equal(network.IP) {
+		return fmt.Errorf("%q has host bits set: use the network address %s", cidr, network)
+	}
+
+	return nil
+}
+
 func (r *mksNodegroupV2Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -437,6 +621,12 @@ func (r *mksNodegroupV2Resource) ModifyPlan(ctx context.Context, req resource.Mo
 	if !req.State.Raw.IsNull() {
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	r.planPricePlan(ctx, plan, state, resp)
+	resp.Diagnostics.Append(resp.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -466,26 +656,61 @@ func (r *mksNodegroupV2Resource) ModifyPlan(ctx context.Context, req resource.Mo
 	}
 }
 
-// checkClusterWorkers fails the plan for a cloud node group in a cluster
-// that accepts only dedicated ones.
+// planPricePlan resolves price_plan_name into price_plan_uuid at plan time
+// when the name is new or changed and known, so a wrong name fails the plan.
+// An unknown name leaves the UUID unknown for Create to resolve.
+func (r *mksNodegroupV2Resource) planPricePlan(ctx context.Context, plan, state mksNodegroupV2Model, resp *resource.ModifyPlanResponse) {
+	if plan.DedicatedNodegroupConfig.IsNull() || plan.DedicatedNodegroupConfig.IsUnknown() {
+		return
+	}
+	var planned, prior mksNodegroupV2DedicatedConfigModel
+	resp.Diagnostics.Append(plan.DedicatedNodegroupConfig.As(ctx, &planned, basetypes.ObjectAsOptions{UnhandledUnknownAsEmpty: true})...)
+	if !state.DedicatedNodegroupConfig.IsNull() && !state.DedicatedNodegroupConfig.IsUnknown() {
+		resp.Diagnostics.Append(state.DedicatedNodegroupConfig.As(ctx, &prior, basetypes.ObjectAsOptions{})...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !planned.PricePlanUUID.IsUnknown() && planned.PricePlanName.Equal(prior.PricePlanName) {
+		return
+	}
+
+	uuidPath := path.Root("dedicated_nodegroup_config").AtName("price_plan_uuid")
+	if planned.PricePlanName.IsUnknown() {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, uuidPath, types.StringUnknown())...)
+
+		return
+	}
+	pricePlanUUID, err := r.pricePlanUUID(ctx, planned.PricePlanName.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("dedicated_nodegroup_config").AtName("price_plan_name"),
+			"Error resolving the price plan", err.Error())
+
+		return
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, uuidPath, pricePlanUUID)...)
+}
+
+// checkClusterWorkers fails the plan for a node group whose kind the cluster
+// does not accept.
 func (r *mksNodegroupV2Resource) checkClusterWorkers(ctx context.Context, plan mksNodegroupV2Model, diags *diag.Diagnostics) {
 	if plan.ClusterID.IsUnknown() || plan.Segment.IsUnknown() || r.config == nil {
 		return
 	}
 
-	client, d := r.nodegroupClient(ctx, plan.Segment)
+	client, _, d := r.nodegroupClient(ctx, plan.Segment, nil, nil)
 	diags.Append(d...)
 	if diags.HasError() {
 		return
 	}
 
-	err := mksNodegroupV2CheckCluster(ctx, client, plan.ClusterID.ValueString())
+	err := mksNodegroupV2CheckCluster(ctx, client, plan.ClusterID.ValueString(), plan.isDedicated())
 	if isMKSV2NotFound(err) {
 		// Create reports it.
 		return
 	}
 	if err != nil {
-		diags.AddAttributeError(path.Root("cluster_id"), "Cloud node group in a DEDICATED cluster", err.Error())
+		diags.AddAttributeError(path.Root("cluster_id"), "Node group kind not accepted by the cluster", err.Error())
 	}
 }
 
@@ -496,11 +721,9 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	timeout, diags := plan.Timeouts.Create(ctx, mksClusterV2DefaultTimeout)
+	timeout, diags := plan.Timeouts.Create(ctx, plan.defaultTimeout())
 	resp.Diagnostics.Append(diags...)
-	client, diags := r.nodegroupClient(ctx, plan.Segment)
-	resp.Diagnostics.Append(diags...)
-	opts, diags := expandMKSNodegroupV2CreateOpts(ctx, plan)
+	client, pool, diags := r.nodegroupClient(ctx, plan.Segment, nil, nil)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -509,9 +732,18 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// The plan resolved the price plan unless its name was unknown then.
+	resp.Diagnostics.Append(r.resolvePricePlan(ctx, &plan)...)
+	opts, diags := expandMKSNodegroupV2CreateOpts(ctx, plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	clusterID := plan.ClusterID.ValueString()
-	err := mksNodegroupV2CheckCluster(ctx, client, clusterID)
+	err := mksNodegroupV2CheckCluster(ctx, client, clusterID, plan.isDedicated())
 	if err != nil {
+		err = mksNodegroupV2PoolNotFound(err, plan.isDedicated(), pool)
 		resp.Diagnostics.AddAttributeError(path.Root("cluster_id"), "Error creating node group", errCreatingObject(objectNodegroup, err).Error())
 
 		return
@@ -519,10 +751,12 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 
 	nodegroupID, err := createMKSNodegroupV2(ctx, client, clusterID, opts)
 	if err != nil {
+		err = mksNodegroupV2PoolNotFound(err, plan.isDedicated(), pool)
 		resp.Diagnostics.AddError("Error creating node group", errCreatingObject(objectNodegroup, err).Error())
 
 		return
 	}
+	resp.Diagnostics.Append(mksNodegroupV2SavePool(ctx, plan.isDedicated(), pool, nil, resp.Private)...)
 
 	waitErr := newMKSV2CreatedTaskWaiter(client, clusterID, nodegroupID).Wait(ctx)
 
@@ -542,7 +776,7 @@ func (r *mksNodegroupV2Resource) Create(ctx context.Context, req resource.Create
 	state := plan
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, plan, true)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
-	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
+	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity, pool)...)
 	if waitErr != nil {
 		resp.Diagnostics.AddError("Error waiting for the node group to become ready", waitErr.Error())
 	}
@@ -562,16 +796,7 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 
 		return
 	}
-	pool := ""
-	if !state.Segment.IsNull() {
-		pool = mksNodegroupV2Pool(state.Segment.ValueString())
-	} else if req.Identity != nil && !req.Identity.Raw.IsNull() {
-		// Import by identity: the segment is not read yet.
-		var identity mksNodegroupV2IdentityModel
-		resp.Diagnostics.Append(req.Identity.Get(ctx, &identity)...)
-		pool = identity.Pool.ValueString()
-	}
-	client, diags := r.poolClient(ctx, pool)
+	client, pool, diags := r.nodegroupClient(ctx, state.Segment, req.Identity, req.Private)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -592,14 +817,6 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2MovedProjectKey, nil)...)
-	if got.DedicatedNodegroupConfig != nil {
-		// Import reads here too: the node group would otherwise get a cloud
-		// configuration planned and be replaced.
-		resp.Diagnostics.AddError("Unsupported node group",
-			fmt.Sprintf("node group %s is dedicated: dedicated node groups are not supported by this resource yet", state.ID.ValueString()))
-
-		return
-	}
 
 	// A null segment means this is the read of the import itself.
 	if !state.Segment.IsNull() {
@@ -607,8 +824,12 @@ func (r *mksNodegroupV2Resource) Read(ctx context.Context, req resource.ReadRequ
 	}
 	prior := state
 	resp.Diagnostics.Append(state.fromAPI(ctx, got, prior, false)...)
+	resp.Diagnostics.Append(r.readPricePlanName(ctx, &state)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
-	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity)...)
+	resp.Diagnostics.Append(state.setIdentity(ctx, resp.Identity, pool)...)
+	// The read of an import, or of a node group created before the pool was
+	// saved.
+	resp.Diagnostics.Append(mksNodegroupV2SavePool(ctx, state.isDedicated(), pool, req.Private, resp.Private)...)
 }
 
 // checkMovedProject fails a Read that got 404 for a node group moved from
@@ -647,9 +868,9 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 		return
 	}
 
-	timeout, diags := plan.Timeouts.Update(ctx, mksClusterV2DefaultTimeout)
+	timeout, diags := plan.Timeouts.Update(ctx, plan.defaultTimeout())
 	resp.Diagnostics.Append(diags...)
-	client, diags := r.nodegroupClient(ctx, state.Segment)
+	client, pool, diags := r.nodegroupClient(ctx, state.Segment, req.Identity, req.Private)
 	resp.Diagnostics.Append(diags...)
 	patch, changed, diags := expandMKSNodegroupV2Patch(ctx, plan, state)
 	resp.Diagnostics.Append(diags...)
@@ -666,6 +887,7 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 			return nodegroup.Patch(ctx, client, clusterID, nodegroupID, patch)
 		})
 		if err != nil {
+			err = mksNodegroupV2PoolNotFound(err, state.isDedicated(), pool)
 			resp.Diagnostics.AddError("Error updating node group", errUpdatingObject(objectNodegroup, state.ID.ValueString(), err).Error())
 
 			return
@@ -677,6 +899,7 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 			return nodegroup.Resize(ctx, client, clusterID, nodegroupID, plan.Count.ValueInt64())
 		})
 		if err != nil {
+			err = mksNodegroupV2PoolNotFound(err, state.isDedicated(), pool)
 			resp.Diagnostics.AddError("Error resizing node group", errUpdatingObject(objectNodegroup, state.ID.ValueString(), err).Error())
 
 			return
@@ -692,7 +915,7 @@ func (r *mksNodegroupV2Resource) Update(ctx context.Context, req resource.Update
 	planned := plan.CloudNodegroupConfig
 	resp.Diagnostics.Append(plan.fromAPI(ctx, got, plan, true)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
-	resp.Diagnostics.Append(plan.setIdentity(ctx, resp.Identity)...)
+	resp.Diagnostics.Append(plan.setIdentity(ctx, resp.Identity, pool)...)
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, mksNodegroupV2ImportedKey, nil)...)
 	resp.Diagnostics.Append(mksNodegroupV2CheckFlavorVolume(ctx, planned, got.CloudNodegroupConfig)...)
 }
@@ -704,9 +927,9 @@ func (r *mksNodegroupV2Resource) Delete(ctx context.Context, req resource.Delete
 		return
 	}
 
-	timeout, diags := state.Timeouts.Delete(ctx, mksClusterV2DefaultTimeout)
+	timeout, diags := state.Timeouts.Delete(ctx, state.defaultTimeout())
 	resp.Diagnostics.Append(diags...)
-	client, diags := r.nodegroupClient(ctx, state.Segment)
+	client, _, diags := r.nodegroupClient(ctx, state.Segment, req.Identity, req.Private)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -845,15 +1068,103 @@ func mksNodegroupV2ReplaceUnlessImported(ctx context.Context, stateNull bool, ge
 	return len(imported) == 0
 }
 
-// nodegroupClient builds the client for the provider project and the pool of
-// the segment, or of the provider before an import has read the segment.
-func (r *mksNodegroupV2Resource) nodegroupClient(ctx context.Context, segment types.String) (*mksv2.ServiceClient, diag.Diagnostics) {
+// nodegroupClient builds the client for the provider project and returns it
+// with its pool: the pool of a pool segment; otherwise, for a dedicated
+// location such as SPB-3 or before an import has read the segment, the pool
+// saved in the private state or the identity, which keep the one used before,
+// or else the pool of the provider. private is nil before the node group
+// exists.
+func (r *mksNodegroupV2Resource) nodegroupClient(ctx context.Context, segment types.String, identity *tfsdk.ResourceIdentity,
+	private mksNodegroupV2PrivateState,
+) (*mksv2.ServiceClient, string, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	knownSegment := !segment.IsNull() && !segment.IsUnknown()
+
 	pool := ""
-	if !segment.IsNull() && !segment.IsUnknown() {
+	if knownSegment && mksNodegroupV2SegmentRegexp.MatchString(segment.ValueString()) {
 		pool = mksNodegroupV2Pool(segment.ValueString())
 	}
+	if pool == "" && private != nil {
+		pool, diags = mksNodegroupV2SavedPool(ctx, private)
+	}
+	if pool == "" && identity != nil && !identity.Raw.IsNull() {
+		var id mksNodegroupV2IdentityModel
+		diags.Append(identity.Get(ctx, &id)...)
+		pool = id.Pool.ValueString()
+	}
+	if pool == "" && r.config != nil {
+		pool = r.config.Region
+	}
+	if pool == "" && knownSegment {
+		diags.AddError("Missing pool", fmt.Sprintf("Segment %s of a dedicated node group is a server location, not a pool segment, "+
+			"so the pool comes from the provider: set region in the provider configuration "+
+			"or the INFRA_REGION environment variable to the pool of the cluster.", segment.ValueString()))
 
-	return r.poolClient(ctx, pool)
+		return nil, "", diags
+	}
+	if diags.HasError() {
+		return nil, "", diags
+	}
+
+	client, d := r.poolClient(ctx, pool)
+	diags.Append(d...)
+
+	return client, pool, diags
+}
+
+// mksNodegroupV2PoolKey holds the pool of a dedicated node group: its
+// location tells none, and without it a later change of the provider region
+// would make Read look in another pool, get 404 and drop the node group from
+// the state on Terraform before 1.12, which sends no identity.
+const mksNodegroupV2PoolKey = "pool"
+
+// mksNodegroupV2SavedPool returns the pool saved in the private state, or "".
+func mksNodegroupV2SavedPool(ctx context.Context, private mksNodegroupV2PrivateState) (string, diag.Diagnostics) {
+	raw, diags := private.GetKey(ctx, mksNodegroupV2PoolKey)
+	if len(raw) == 0 || diags.HasError() {
+		return "", diags
+	}
+	var pool string
+	err := json.Unmarshal(raw, &pool)
+	if err != nil {
+		diags.AddError("Error reading the pool of the node group", err.Error())
+	}
+
+	return pool, diags
+}
+
+// mksNodegroupV2SavePool saves the pool of a dedicated node group in next
+// unless prior has one already; prior is nil in Create.
+func mksNodegroupV2SavePool(ctx context.Context, dedicated bool, pool string, prior, next mksNodegroupV2PrivateState) diag.Diagnostics {
+	if !dedicated || pool == "" || next == nil {
+		return nil
+	}
+	if prior != nil {
+		saved, diags := mksNodegroupV2SavedPool(ctx, prior)
+		if saved != "" || diags.HasError() {
+			return diags
+		}
+	}
+	raw, err := json.Marshal(pool)
+	if err != nil {
+		var diags diag.Diagnostics
+		diags.AddError("Error saving the pool of the node group", err.Error())
+
+		return diags
+	}
+
+	return next.SetKey(ctx, mksNodegroupV2PoolKey, raw)
+}
+
+// mksNodegroupV2PoolNotFound names the pool in a 404 for a dedicated node
+// group, whose pool comes from the provider at create, not from its segment.
+func mksNodegroupV2PoolNotFound(err error, dedicated bool, pool string) error {
+	if !dedicated || !isMKSV2NotFound(err) {
+		return err
+	}
+
+	return fmt.Errorf("%w; looked up in pool %s: a dedicated node group takes the pool from the provider region "+
+		"when it is created, so set region of the provider to the pool of the cluster", err, pool)
 }
 
 // poolClient builds the client for the provider project and the pool, or the
@@ -898,19 +1209,105 @@ func mksNodegroupV2Pool(segment string) string {
 	return strings.TrimRight(segment, "abcdefghijklmnopqrstuvwxyz")
 }
 
-// mksNodegroupV2CheckCluster fails for a cluster whose workers_type is
-// DEDICATED: mk-api-v2 accepts only dedicated node groups there.
-func mksNodegroupV2CheckCluster(ctx context.Context, client *mksv2.ServiceClient, clusterID string) error {
+// mksNodegroupV2CheckCluster fails when the cluster does not accept the kind
+// of node group: mk-api-v2 creates dedicated node groups only in L3VPN
+// clusters and cloud ones only in STANDARD clusters
+// (validate/nodegroup.go:309 and :391).
+func mksNodegroupV2CheckCluster(ctx context.Context, client *mksv2.ServiceClient, clusterID string, dedicated bool) error {
 	c, err := cluster.Get(ctx, client, clusterID)
 	if err != nil {
 		return err
 	}
-	if c.NetworkType == mksclient.ClusterDetailedNetworkTypeL3VPN {
+	l3vpn := c.NetworkType == mksclient.ClusterDetailedNetworkTypeL3VPN
+	if l3vpn && !dedicated {
 		return fmt.Errorf("cluster %s has workers_type = DEDICATED and accepts only dedicated node groups, "+
 			"while cloud_nodegroup_config creates a cloud one; changing workers_type of the cluster recreates the cluster", clusterID)
 	}
+	if !l3vpn && dedicated {
+		return fmt.Errorf("cluster %s has workers_type = CLOUD and accepts only cloud node groups, "+
+			"while dedicated_nodegroup_config creates one of dedicated servers; changing workers_type of the cluster recreates the cluster", clusterID)
+	}
 
 	return nil
+}
+
+// resolvePricePlan sets price_plan_uuid of a dedicated node group when the
+// plan could not resolve it.
+func (r *mksNodegroupV2Resource) resolvePricePlan(ctx context.Context, plan *mksNodegroupV2Model) diag.Diagnostics {
+	if !plan.isDedicated() {
+		return nil
+	}
+	var cfg mksNodegroupV2DedicatedConfigModel
+	diags := plan.DedicatedNodegroupConfig.As(ctx, &cfg, basetypes.ObjectAsOptions{UnhandledUnknownAsEmpty: true})
+	if diags.HasError() || !cfg.PricePlanUUID.IsUnknown() {
+		return diags
+	}
+
+	pricePlanUUID, err := r.pricePlanUUID(ctx, cfg.PricePlanName.ValueString())
+	if err != nil {
+		diags.AddAttributeError(path.Root("dedicated_nodegroup_config").AtName("price_plan_name"),
+			"Error resolving the price plan", err.Error())
+
+		return diags
+	}
+	cfg.PricePlanUUID = types.StringValue(pricePlanUUID)
+	var d diag.Diagnostics
+	plan.DedicatedNodegroupConfig, d = types.ObjectValueFrom(ctx, mksNodegroupV2DedicatedConfigAttrTypes, cfg)
+	diags.Append(d...)
+
+	return diags
+}
+
+// readPricePlanName fills price_plan_name from the UUID the API returns when
+// the state has none, as after an import, and fails for a UUID the price plans
+// lack, like selectel_dedicated_server_v1.
+func (r *mksNodegroupV2Resource) readPricePlanName(ctx context.Context, m *mksNodegroupV2Model) diag.Diagnostics {
+	if !m.isDedicated() {
+		return nil
+	}
+	var cfg mksNodegroupV2DedicatedConfigModel
+	diags := m.DedicatedNodegroupConfig.As(ctx, &cfg, basetypes.ObjectAsOptions{})
+	if diags.HasError() || !cfg.PricePlanName.IsNull() {
+		return diags
+	}
+
+	plans, err := r.pricePlans(ctx)
+	if err != nil {
+		diags.AddError("Error reading node group", err.Error())
+
+		return diags
+	}
+	plan := plans.FindOneID(cfg.PricePlanUUID.ValueString())
+	if plan == nil {
+		// A null name would make the configured one replace the node group.
+		diags.AddError("Error reading node group", fmt.Sprintf("price plan %s of the node group is not among the "+
+			"price plans of the dedicated servers API, so price_plan_name can't be read", cfg.PricePlanUUID.ValueString()))
+
+		return diags
+	}
+	cfg.PricePlanName = types.StringValue(plan.Name)
+	var d diag.Diagnostics
+	m.DedicatedNodegroupConfig, d = types.ObjectValueFrom(ctx, mksNodegroupV2DedicatedConfigAttrTypes, cfg)
+	diags.Append(d...)
+
+	return diags
+}
+
+// isDedicated tells a dedicated node group from a cloud one.
+func (m *mksNodegroupV2Model) isDedicated() bool {
+	return !m.DedicatedNodegroupConfig.IsNull() && !m.DedicatedNodegroupConfig.IsUnknown()
+}
+
+// defaultTimeout is the default of every timeout of the node group: a resize
+// of a dedicated node group orders servers and a delete waits for their
+// cancellation with the same mk-cluster-bm limits as a create
+// (create_dedicated_servers.go:72-93, delete_dedicated_nodegroup.go:143-149).
+func (m *mksNodegroupV2Model) defaultTimeout() time.Duration {
+	if m.isDedicated() {
+		return mksNodegroupV2DedicatedCreateTimeout
+	}
+
+	return mksClusterV2DefaultTimeout
 }
 
 // createMKSNodegroupV2 creates the node group and finds its ID: the API
@@ -1007,8 +1404,8 @@ func mksNodegroupV2NewIDs(known []string, after []mksclient.NodegroupListItem) [
 }
 
 // mksNodegroupV2Matching keeps the created node groups with the segment,
-// labels and flavor_id of the create options. The API returns neither cpus nor
-// ram_mb, so those cannot narrow it.
+// labels and flavor_id, or service_uuid and price_plan_uuid, of the create
+// options. The API returns neither cpus nor ram_mb, so those cannot narrow it.
 func mksNodegroupV2Matching(created []string, after []mksclient.NodegroupListItem, opts mksclient.NodegroupCreateStruct) []string {
 	var matching []string
 	for _, ng := range after {
@@ -1018,14 +1415,27 @@ func mksNodegroupV2Matching(created []string, after []mksclient.NodegroupListIte
 		if opts.Labels != nil && !maps.Equal(*opts.Labels, ng.Labels) {
 			continue
 		}
-		flavorID := opts.CloudNodegroupConfig.FlavorId
-		if flavorID != "" && (ng.CloudNodegroupConfig == nil || ng.CloudNodegroupConfig.FlavorId != flavorID) {
+		if !mksNodegroupV2MatchingConfig(ng, opts) {
 			continue
 		}
 		matching = append(matching, ng.Id)
 	}
 
 	return matching
+}
+
+// mksNodegroupV2MatchingConfig compares the server configuration the API
+// returns as sent (apiadapter/nodegroups.go:76-90).
+func mksNodegroupV2MatchingConfig(ng mksclient.NodegroupListItem, opts mksclient.NodegroupCreateStruct) bool {
+	if opts.DedicatedNodegroupConfig != nil {
+		got := ng.DedicatedNodegroupConfig
+
+		return got != nil && got.ServiceUuid == opts.DedicatedNodegroupConfig.ServiceUuid &&
+			got.PricePlanUuid == opts.DedicatedNodegroupConfig.PricePlanUuid
+	}
+	flavorID := opts.CloudNodegroupConfig.FlavorId
+
+	return flavorID == "" || (ng.CloudNodegroupConfig != nil && ng.CloudNodegroupConfig.FlavorId == flavorID)
 }
 
 // mksNodegroupV2CheckFlavorVolume fails when the API replaced a configured
@@ -1116,6 +1526,25 @@ func expandMKSNodegroupV2CreateOpts(ctx context.Context, plan mksNodegroupV2Mode
 		opts.Taints = &taints
 	}
 
+	if plan.isDedicated() {
+		var dedicated mksNodegroupV2DedicatedConfigModel
+		diags.Append(plan.DedicatedNodegroupConfig.As(ctx, &dedicated, basetypes.ObjectAsOptions{})...)
+		opts.DedicatedNodegroupConfig = &mksclient.DedicatedNodegroupConfig{
+			ServiceUuid:            dedicated.ServiceUUID.ValueString(),
+			PricePlanUuid:          dedicated.PricePlanUUID.ValueString(),
+			RootSizeGb:             knownInt64Pointer(dedicated.RootSizeGB),
+			CreateStoragePartition: knownBoolPointer(dedicated.CreateStoragePartition),
+		}
+		if !dedicated.Currency.IsNull() && !dedicated.Currency.IsUnknown() {
+			opts.DedicatedNodegroupConfig.Currency = new(mksclient.DedicatedNodegroupConfigCurrency(dedicated.Currency.ValueString()))
+		}
+		// The API takes a cidr only for a dedicated node group, see
+		// ValidateConfig.
+		opts.Cidr = knownStringOrNull(plan.CIDR).ValueString()
+
+		return opts, diags
+	}
+
 	var cloud mksNodegroupV2CloudConfigModel
 	diags.Append(plan.CloudNodegroupConfig.As(ctx, &cloud, basetypes.ObjectAsOptions{})...)
 	opts.CloudNodegroupConfig = &mksclient.CloudNodegroupConfig{
@@ -1180,9 +1609,9 @@ func expandMKSNodegroupV2Taints(ctx context.Context, list types.List) ([]mksclie
 }
 
 // fromAPI maps the node group onto the model. The API never returns cpus,
-// ram_mb, affinity_policy, and cidr of a cloud node group, so
-// they come from prior. After an apply count is the planned one: the
-// autoscaler may move the nodes at any time.
+// ram_mb, affinity_policy, and cidr of a cloud node group, nor price_plan_name
+// and currency of a dedicated one, so they come from prior. After an apply
+// count is the planned one: the autoscaler may move the nodes at any time.
 func (m *mksNodegroupV2Model) fromAPI(ctx context.Context, ng *mksclient.NodegroupDetailed, prior mksNodegroupV2Model, applied bool) diag.Diagnostics {
 	var diags diag.Diagnostics
 
@@ -1239,7 +1668,45 @@ func (m *mksNodegroupV2Model) fromAPI(ctx context.Context, ng *mksclient.Nodegro
 	diags.Append(d...)
 	m.CloudNodegroupConfig = cloud
 
+	dedicated, d := flattenMKSNodegroupV2DedicatedConfig(ctx, ng.DedicatedNodegroupConfig, prior.DedicatedNodegroupConfig)
+	diags.Append(d...)
+	m.DedicatedNodegroupConfig = dedicated
+
 	return diags
+}
+
+// flattenMKSNodegroupV2DedicatedConfig maps what the API returns of a
+// dedicated node group (apiadapter/nodegroups.go:76-85); price_plan_name and
+// currency come from prior: the API never returns them. A currency left to
+// the API is main: mk-cluster-bm orders with the main balance unless told
+// bonus (internal/models/dedicated/servers/converters.go:3-11).
+func flattenMKSNodegroupV2DedicatedConfig(ctx context.Context, info *mksclient.DedicatedNodegroupConfig, prior types.Object) (types.Object, diag.Diagnostics) {
+	if info == nil {
+		// Not a dedicated node group.
+		return prior, nil
+	}
+
+	var diags diag.Diagnostics
+	priorConfig := mksNodegroupV2DedicatedConfigModel{PricePlanName: types.StringNull(), Currency: types.StringNull()}
+	if !prior.IsNull() && !prior.IsUnknown() {
+		diags.Append(prior.As(ctx, &priorConfig, basetypes.ObjectAsOptions{UnhandledUnknownAsEmpty: true})...)
+	}
+
+	currency := priorConfig.Currency
+	if currency.IsUnknown() {
+		currency = types.StringValue(string(mksclient.Main))
+	}
+	obj, d := types.ObjectValueFrom(ctx, mksNodegroupV2DedicatedConfigAttrTypes, mksNodegroupV2DedicatedConfigModel{
+		ServiceUUID:            types.StringValue(info.ServiceUuid),
+		PricePlanName:          knownStringOrNull(priorConfig.PricePlanName),
+		PricePlanUUID:          types.StringValue(info.PricePlanUuid),
+		RootSizeGB:             types.Int64PointerValue(info.RootSizeGb),
+		CreateStoragePartition: types.BoolPointerValue(info.CreateStoragePartition),
+		Currency:               currency,
+	})
+	diags.Append(d...)
+
+	return obj, diags
 }
 
 func flattenMKSNodegroupV2CloudConfig(ctx context.Context, info *mksclient.CloudNodegroupConfigInfo, prior types.Object) (types.Object, diag.Diagnostics) {

@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	dedicated "github.com/selectel/dedicated-go/v2/pkg/v2"
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
 	"github.com/terraform-providers/terraform-provider-selectel/version"
@@ -65,6 +66,8 @@ type mksV2Fake struct {
 	settles map[string]mksV2FakeSettle
 	// x509CACertificates keeps what PATCH stored; the API never returns it.
 	x509CACertificates map[string]string
+	// pricePlans are what the dedicated servers API lists.
+	pricePlans dedicated.PricePlans
 	// queries keeps the last query string of every route.
 	queries map[string]string
 	// bodies keeps the last request body of every route, calls counts them.
@@ -131,6 +134,9 @@ const (
 	mksV2RoutePatchNodegroup       = "PATCH /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
 	mksV2RouteDeleteNodegroup      = "DELETE /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
 	mksV2RouteResizeNodegroup      = "POST /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}/resize"
+	// mksV2RoutePricePlans is the dedicated servers API route of the price
+	// plans, served by the same fake.
+	mksV2RoutePricePlans = "GET /pub/plan"
 )
 
 // mksV2FakePollInterval shortens the waiter polls for every test: the fake
@@ -187,6 +193,11 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	f.handle(mux, mksV2RoutePatchNodegroup, f.patchNodegroup)
 	f.handle(mux, mksV2RouteDeleteNodegroup, f.deleteNodegroup)
 	f.handle(mux, mksV2RouteResizeNodegroup, f.resizeNodegroup)
+	f.handle(mux, mksV2RoutePricePlans, func(w http.ResponseWriter, _ *http.Request) {
+		writeMKSV2JSON(w, http.StatusOK, struct {
+			Result dedicated.PricePlans `json:"result"`
+		}{Result: f.pricePlans})
+	})
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 
@@ -230,9 +241,10 @@ func (f *mksV2Fake) config(userAgent string, attr func(key string) string) *Conf
 	f.configUserAgent = userAgent
 
 	return &Config{
-		ProjectID: attr("project_id"),
-		Region:    attr("region"),
-		UserAgent: userAgent,
+		ProjectID:    attr("project_id"),
+		Region:       attr("region"),
+		UserAgent:    userAgent,
+		dedicatedURL: f.server.URL,
 		mksV2Client: func(_ context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error) {
 			f.mu.Lock()
 			f.clients = append(f.clients, mksV2FakeClient{projectID: projectID, pool: pool, userAgent: config.UserAgent})
@@ -370,6 +382,10 @@ func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
 		}
 		// Create ignores them, see mk-api-v2 protoadapter/create_cluster.go.
 		c.KubernetesOptions.X509CaCertificates = ""
+	}
+	// Like daladapter/cluster.go, auto repair is off for L3VPN whatever was sent.
+	if c.NetworkType == mksclient.ClusterDetailedNetworkTypeL3VPN {
+		c.EnableAutorepair = false
 	}
 	f.clusters[c.Id] = c
 
@@ -1026,7 +1042,8 @@ var mksV2FakeFlavors = map[string]struct {
 
 // createNodegroups fills what the API defaults and starts a CLUSTER_RESIZE
 // task per nodegroup, which adds the nodes. Like the API it answers 204 with
-// no body and never returns the CIDR of a cloud nodegroup.
+// no body, never returns the CIDR of a cloud nodegroup, and takes cloud
+// nodegroups only in STANDARD clusters, dedicated ones only in L3VPN ones.
 func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 	clusterID := r.PathValue("cluster_id")
 	if _, ok := f.clusters[clusterID]; !ok {
@@ -1042,9 +1059,17 @@ func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	l3vpn := f.clusters[clusterID].NetworkType == mksclient.ClusterDetailedNetworkTypeL3VPN
 	for _, opts := range body.Nodegroups {
 		cloud := valueOrZero(opts.CloudNodegroupConfig)
-		if cloud.FlavorId == "" && valueOr(opts.InstallNvidiaDevicePlugin, false) {
+		switch {
+		case (opts.CloudNodegroupConfig == nil) == (opts.DedicatedNodegroupConfig == nil),
+			// validate/nodegroup.go:97-106.
+			opts.DedicatedNodegroupConfig != nil && (!l3vpn || opts.DedicatedNodegroupConfig.PricePlanUuid == ""),
+			// validate/nodegroup.go:309, :317.
+			opts.CloudNodegroupConfig != nil && l3vpn,
+			// validate/nodegroup.go:391.
+			cloud.FlavorId == "" && opts.CloudNodegroupConfig != nil && valueOr(opts.InstallNvidiaDevicePlugin, false):
 			// validate/flavor.go ErrorInstallNDPWithoutFlavor.
 			writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, "")
 
@@ -1065,7 +1090,7 @@ func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 			cloud.LocalVolume = cloud.LocalVolume || flavor.localDisk
 			cloud.VolumeGb = cmp.Or(flavor.volumeGB, cloud.VolumeGb)
 		}
-		f.nodegroups[id] = mksclient.NodegroupDetailed{
+		ng := mksclient.NodegroupDetailed{
 			Id:                        id,
 			ClusterId:                 clusterID,
 			Segment:                   opts.Segment,
@@ -1087,9 +1112,33 @@ func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
 				LocalVolume: cloud.LocalVolume,
 			},
 		}
+		if config := opts.DedicatedNodegroupConfig; config != nil {
+			// daladapter/worker_group.go:52-68 and validate/nodegroup.go:351-357;
+			// the currency is never returned (apiadapter/nodegroups.go:76-85).
+			ng.NodegroupType = mksclient.NodegroupDetailedNodegroupTypeDEDICATED
+			ng.EnableAutoscale, ng.AutoscaleMinNodes, ng.AutoscaleMaxNodes = false, new(int64(0)), new(int64(0))
+			ng.Preemptible = false
+			ng.CloudNodegroupConfig = nil
+			ng.DedicatedNodegroupConfig = &mksclient.DedicatedNodegroupConfig{
+				ServiceUuid:            config.ServiceUuid,
+				PricePlanUuid:          config.PricePlanUuid,
+				RootSizeGb:             new(valueOr(config.RootSizeGb, 100)),
+				CreateStoragePartition: new(valueOr(config.CreateStoragePartition, true)),
+			}
+			if opts.Cidr != "" {
+				ng.Cidr = new(opts.Cidr)
+			}
+		}
+		f.nodegroups[id] = ng
 		count := opts.Count
 		f.addNodegroupTask(clusterID, id, "CLUSTER_RESIZE", func() {
 			ng := f.nodegroups[id]
+			if ng.DedicatedNodegroupConfig != nil && ng.Cidr == nil {
+				// mk-conductor stores the subnet mk-cluster-bm allocated
+				// (internal/pkg/msg/subscribe/mkclusterbm.go:1535, :1551-1552),
+				// and the API returns it (apiadapter/nodegroups.go:80-82).
+				ng.Cidr = new(mksV2FakeAllocatedCIDR)
+			}
 			ng.Status = mksclient.NodegroupDetailedStatusACTIVE
 			ng.Nodes = mksV2FakeNodes(id, count)
 			f.nodegroups[id] = ng
@@ -1169,6 +1218,13 @@ func (f *mksV2Fake) patchNodegroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts := body.Nodegroup
+	if ng.DedicatedNodegroupConfig != nil &&
+		(opts.EnableAutoscale != nil || opts.AutoscaleMinNodes != nil || opts.AutoscaleMaxNodes != nil) {
+		// validate/nodegroup.go:257-263.
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
+
+		return
+	}
 
 	ng.EnableAutoscale = valueOr(opts.EnableAutoscale, ng.EnableAutoscale)
 	if opts.AutoscaleMinNodes != nil {
@@ -1260,6 +1316,10 @@ func (f *mksV2Fake) addNodegroupTask(clusterID, nodegroupID, taskType string, ef
 	f.tasks[len(f.tasks)-1].task.NodegroupId = &nodegroupID
 }
 
+// mksV2FakeAllocatedCIDR is the cidr the fake allocates to a dedicated node
+// group created without one.
+const mksV2FakeAllocatedCIDR = "10.10.0.0/24"
+
 func mksV2FakeNodes(nodegroupID string, count int64) []mksclient.Node {
 	nodes := make([]mksclient.Node, count)
 	for i := range nodes {
@@ -1272,6 +1332,14 @@ func mksV2FakeNodes(nodegroupID string, count int64) []mksclient.Node {
 	}
 
 	return nodes
+}
+
+// seedPricePlans sets what the dedicated servers API lists.
+func (f *mksV2Fake) seedPricePlans(plans ...*dedicated.PricePlan) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.pricePlans = plans
 }
 
 // seedNodegroup adds a nodegroup the provider did not create.

@@ -144,7 +144,7 @@ moved {
 }
 ```
 
-Set `workers_type = "CLOUD"` for a cluster created by `selectel_mks_cluster_v1`.
+Set `workers_type = "CLOUD"` for a cluster created by `selectel_mks_cluster_v1`. For the mapping of the arguments, earlier Terraform versions and a complete example, see the [migration guide](https://registry.terraform.io/providers/selectel/selectel/latest/docs/guides/migrating_mks_to_v2).
 
 ## Import
 

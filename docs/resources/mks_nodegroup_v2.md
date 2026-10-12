@@ -117,7 +117,7 @@ moved {
 }
 ```
 
-Move the node groups together with their cluster.
+Move the node groups together with their cluster. For the mapping of the arguments, earlier Terraform versions and a complete example, see the [migration guide](https://registry.terraform.io/providers/selectel/selectel/latest/docs/guides/migrating_mks_to_v2).
 
 ## Import
 

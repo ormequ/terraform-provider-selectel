@@ -134,21 +134,9 @@ func TestMKSKubeconfigV2DataSourceAPIErrors(t *testing.T) {
 	}
 }
 
-// testMKSV2ProviderConfig is the provider with project_id and no region. It
-// sets every other provider argument, so a test reads nothing from the
-// environment and needs no t.Setenv, which t.Parallel forbids.
+// testMKSV2ProviderConfig is the provider with project_id and no region.
 func testMKSV2ProviderConfig(providerProjectID string) string {
-	return fmt.Sprintf(`
-provider "selectel" {
-  project_id  = %q
-  region      = ""
-  auth_url    = "test"
-  auth_region = "test"
-  domain_name = "test"
-  username    = "test"
-  password    = "test"
-}
-`, providerProjectID)
+	return testMKSClusterV2ProviderConfig(providerProjectID, "")
 }
 
 // testMKSV2ProjectIDArgument renders the project_id argument of a data source.

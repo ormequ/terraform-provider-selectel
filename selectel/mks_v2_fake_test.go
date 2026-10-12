@@ -1,13 +1,23 @@
 package selectel
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -31,12 +41,51 @@ type mksV2Fake struct {
 	admissionControllers []mksclient.AvailableAdmissionControllers
 	// failures maps a route pattern to the HTTP status it answers with.
 	failures map[string]int
+	// failureBodies maps a route pattern to the raw body its forced failure
+	// answers with instead of the mk-api-v2 error.
+	failureBodies map[string]mksV2FakeBody
+	tasks         []*mksV2FakeTask
+	// failedTaskTypes makes new tasks of a type end in ERROR.
+	failedTaskTypes map[string]bool
+	// stuckTaskTypes keeps the running tasks of a type running.
+	stuckTaskTypes map[string]bool
+	// settles maps a cluster ID to the GETs it answers before
+	// its status changes on its own, like after a task the API keeps running.
+	settles map[string]mksV2FakeSettle
+	// x509CACertificates keeps what PATCH stored; the API never returns it.
+	x509CACertificates map[string]string
+	// queries keeps the last query string of every route.
+	queries map[string]string
+	// bodies keeps the last request body of every route, calls counts them.
+	bodies map[string][]byte
+	calls  map[string]int
 
 	// clients records every client built, userAgents every request, and
 	// configUserAgent is the User-Agent of the provider Config.
 	clients         []mksV2FakeClient
 	userAgents      []string
 	configUserAgent string
+}
+
+// mksV2FakeTask finishes on its first GET, unless stuck, and then applies
+// effect when it is DONE.
+// mksV2FakeBody is a raw response body and its content type.
+type mksV2FakeBody struct {
+	contentType string
+	body        string
+}
+
+// mksV2FakeSettle is the status an object reaches after gets more GETs; an
+// empty status removes the object.
+type mksV2FakeSettle struct {
+	gets   int
+	status string
+}
+
+type mksV2FakeTask struct {
+	task   mksclient.Task
+	stuck  bool
+	effect func()
 }
 
 type mksV2FakeClient struct {
@@ -58,10 +107,22 @@ const (
 	mksV2RouteKubeVersions         = "GET /v2/kubeversions"
 	mksV2RouteFeatureGates         = "GET /v2/feature-gates"
 	mksV2RouteAdmissionControllers = "GET /v2/admission-controllers"
+	mksV2RouteCreateCluster        = "POST /v2/clusters"
+	mksV2RoutePatchCluster         = "PATCH /v2/clusters/{cluster_id}"
+	mksV2RouteDeleteCluster        = "DELETE /v2/clusters/{cluster_id}"
+	mksV2RouteUpgradePatch         = "POST /v2/clusters/{cluster_id}/upgrade-patch-version"
+	mksV2RouteUpgradeMinor         = "POST /v2/clusters/{cluster_id}/upgrade-minor-version"
+	mksV2RouteTasks                = "GET /v2/clusters/{cluster_id}/tasks"
+	mksV2RouteTask                 = "GET /v2/clusters/{cluster_id}/tasks/{task_id}"
 )
 
-// newMKSV2Fake starts the fake. It touches no package state, so tests using it
-// may call t.Parallel.
+// mksV2FakePollInterval shortens the waiter polls for every test: the fake
+// answers at once. It is set once and never restored, so parallel tests do
+// not race on it.
+var mksV2FakePollInterval sync.Once
+
+// newMKSV2Fake starts the fake. It touches no package state but the poll
+// interval, so tests using it may call t.Parallel.
 func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	t.Helper()
 
@@ -69,6 +130,16 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 		clusters:    map[string]mksclient.ClusterDetailed{},
 		kubeconfigs: map[string]string{},
 		failures:    map[string]int{},
+
+		failureBodies: map[string]mksV2FakeBody{},
+
+		failedTaskTypes:    map[string]bool{},
+		stuckTaskTypes:     map[string]bool{},
+		settles:            map[string]mksV2FakeSettle{},
+		x509CACertificates: map[string]string{},
+		queries:            map[string]string{},
+		bodies:             map[string][]byte{},
+		calls:              map[string]int{},
 	}
 
 	mux := http.NewServeMux()
@@ -83,8 +154,17 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	f.handle(mux, mksV2RouteAdmissionControllers, func(w http.ResponseWriter, _ *http.Request) {
 		writeMKSV2JSON(w, http.StatusOK, mksclient.AdmissionControllersList{AdmissionControllers: &f.admissionControllers})
 	})
+	f.handle(mux, mksV2RouteCreateCluster, f.createCluster)
+	f.handle(mux, mksV2RoutePatchCluster, f.patchCluster)
+	f.handle(mux, mksV2RouteDeleteCluster, f.deleteCluster)
+	f.handle(mux, mksV2RouteUpgradePatch, f.upgradeCluster(false))
+	f.handle(mux, mksV2RouteUpgradeMinor, f.upgradeCluster(true))
+	f.handle(mux, mksV2RouteTasks, f.listTasks)
+	f.handle(mux, mksV2RouteTask, f.getTask)
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
+
+	mksV2FakePollInterval.Do(func() { mksV2PollInterval = time.Millisecond })
 
 	return f
 }
@@ -149,7 +229,21 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 		defer f.mu.Unlock()
 
 		f.userAgents = append(f.userAgents, r.Header.Get("User-Agent"))
+		f.calls[pattern]++
+		f.queries[pattern] = r.URL.RawQuery
+		body, _ := io.ReadAll(r.Body)
+		if len(body) > 0 {
+			f.bodies[pattern] = body
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		status, ok := f.failures[pattern]
+		if raw, hasBody := f.failureBodies[pattern]; ok && hasBody {
+			w.Header().Set("Content-Type", raw.contentType)
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, raw.body)
+
+			return
+		}
 		if ok {
 			objectType, id := mksV2FakeObject(r)
 			writeMKSV2Error(w, status, objectType, id)
@@ -163,6 +257,9 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 
 func (f *mksV2Fake) getCluster(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
+	if status, settled := f.settle(id); settled {
+		f.updateClusterLocked(id, status)
+	}
 	c, ok := f.clusters[id]
 	if !ok {
 		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
@@ -184,6 +281,484 @@ func (f *mksV2Fake) getKubeconfig(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/yaml")
 	_, _ = w.Write([]byte(kubeconfig))
+}
+
+// createCluster fills what the API defaults and starts CREATE_CLUSTER. The
+// cluster gets testMKSV2ClusterID and the project of the last client, dashed
+// like mk-api-v2 returns it.
+func (f *mksV2Fake) createCluster(w http.ResponseWriter, r *http.Request) {
+	var body mksclient.ClusterCreateBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil || body.Cluster == nil {
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, "")
+
+		return
+	}
+	opts := body.Cluster
+
+	clusterType := mksclient.HIGHAVAILABILITY
+	if opts.ClusterType != nil {
+		clusterType = mksclient.ClusterDetailedClusterType(*opts.ClusterType)
+	}
+	cniType := mksclient.ClusterDetailedCniType(mksclient.ClusterCniTypeCALICO)
+	if opts.CniType != nil {
+		cniType = mksclient.ClusterDetailedCniType(*opts.CniType)
+	}
+	// Like validate/cluster.go, the name is stored in lower case.
+	c := mksclient.ClusterDetailed{
+		Id:                            testMKSV2ClusterID,
+		Name:                          strings.ToLower(opts.Name),
+		Pool:                          opts.Pool,
+		ProjectId:                     mksV2FakeAPIProjectID(f.clients[len(f.clients)-1].projectID),
+		KubeVersion:                   opts.KubeVersion,
+		ClusterType:                   clusterType,
+		Basic:                         clusterType == mksclient.BASIC,
+		NetworkType:                   mksclient.ClusterDetailedNetworkType(opts.NetworkType),
+		NetworkId:                     cmp.Or(opts.NetworkId, "fake-network"),
+		SubnetId:                      cmp.Or(opts.SubnetId, "fake-subnet"),
+		PrivateKubeApi:                opts.PrivateKubeApi,
+		EnableAutorepair:              valueOr(opts.EnableAutorepair, true),
+		EnablePatchVersionAutoUpgrade: valueOr(opts.EnablePatchVersionAutoUpgrade, clusterType != mksclient.BASIC),
+		CniType:                       cniType,
+		KubeApiIp:                     "192.0.2.10",
+		Status:                        "PENDING_CREATE",
+	}
+	setMKSV2FakeWindow(&c, cmp.Or(opts.MaintenanceWindowStart, "03:00:00"))
+	if cniType == mksclient.ClusterDetailedCniType(mksclient.ClusterCniTypeCILIUM) {
+		cilium := valueOrZero(opts.CniCiliumSettings)
+		c.CniCiliumSettings = &mksclient.CNICiliumSettings{
+			EnvoyDaemonset: new(valueOr(cilium.EnvoyDaemonset, true)),
+			HubbleRelay:    new(valueOr(cilium.HubbleRelay, true)),
+		}
+	}
+	if opts.KubernetesOptions != nil {
+		c.KubernetesOptions = *opts.KubernetesOptions
+		c.KubernetesOptions.Oidc, err = normaliseMKSV2FakeOIDC(c.KubernetesOptions.Oidc)
+		if err != nil {
+			writeMKSV2BadRequest(w, err)
+
+			return
+		}
+		// Create ignores them, see mk-api-v2 protoadapter/create_cluster.go.
+		c.KubernetesOptions.X509CaCertificates = ""
+	}
+	f.clusters[c.Id] = c
+
+	f.addTask(c.Id, "CREATE_CLUSTER", f.activateCluster(c.Id))
+	writeMKSV2JSON(w, http.StatusCreated, mksclient.ClusterResp{Cluster: &c})
+}
+
+// patchCluster applies the sent fields like mk-api-v2 handlers/clusters/
+// partial_update.go: a kube options or Cilium change starts a task and moves
+// the cluster to PENDING_UPGRADE_CLUSTER_CONFIG until the task is DONE.
+func (f *mksV2Fake) patchCluster(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("cluster_id")
+	c, ok := f.clusters[id]
+	if !ok {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
+
+		return
+	}
+	var body mksclient.ClusterUpdateBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil || body.Cluster == nil {
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, id)
+
+		return
+	}
+	opts := body.Cluster
+
+	if opts.MaintenanceWindowStart != nil {
+		setMKSV2FakeWindow(&c, *opts.MaintenanceWindowStart)
+	}
+	c.EnableAutorepair = valueOr(opts.EnableAutorepair, c.EnableAutorepair)
+	c.EnablePatchVersionAutoUpgrade = valueOr(opts.EnablePatchVersionAutoUpgrade, c.EnablePatchVersionAutoUpgrade)
+	if opts.CniCiliumSettings != nil {
+		cilium := valueOrZero(c.CniCiliumSettings)
+		cilium.EnvoyDaemonset = cmp.Or(opts.CniCiliumSettings.EnvoyDaemonset, cilium.EnvoyDaemonset)
+		cilium.HubbleRelay = cmp.Or(opts.CniCiliumSettings.HubbleRelay, cilium.HubbleRelay)
+		c.CniCiliumSettings = &cilium
+		c.Status = "PENDING_UPGRADE_CLUSTER_CONFIG"
+		f.addTask(id, "UPGRADE_CLUSTER_CONFIG", f.activateCluster(id))
+	}
+	if opts.KubernetesOptions != nil {
+		changed, err := f.patchKubeOptions(&c, *opts.KubernetesOptions)
+		if err != nil {
+			writeMKSV2BadRequest(w, err)
+
+			return
+		}
+		if changed {
+			c.Status = "PENDING_UPGRADE_CLUSTER_CONFIG"
+			f.addTask(id, "UPGRADE_MASTERS_CONFIG", f.activateCluster(id))
+		}
+	}
+	f.clusters[id] = c
+
+	writeMKSV2JSON(w, http.StatusOK, mksclient.ClusterResp{Cluster: &c})
+}
+
+// patchKubeOptions stores the changed options the way the API does and
+// reports whether anything changed: audit_logs only with enabled, OIDC only
+// with a field other than provider_name, x509 whenever it is not empty.
+func (f *mksV2Fake) patchKubeOptions(c *mksclient.ClusterDetailed, requested mksclient.KubernetesOptions) (bool, error) {
+	current := &c.KubernetesOptions
+	var err error
+	requested.Oidc, err = normaliseMKSV2FakeOIDC(requested.Oidc)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+
+	if !slices.Equal(current.FeatureGates, requested.FeatureGates) {
+		current.FeatureGates = requested.FeatureGates
+		changed = true
+	}
+	if !slices.Equal(current.AdmissionControllers, requested.AdmissionControllers) {
+		current.AdmissionControllers = requested.AdmissionControllers
+		changed = true
+	}
+	if current.AuditLogs.Enabled != requested.AuditLogs.Enabled {
+		current.AuditLogs = requested.AuditLogs
+		changed = true
+	}
+	oidcChanged := current.Oidc
+	oidcChanged.ProviderName = requested.Oidc.ProviderName
+	if oidcChanged != requested.Oidc {
+		current.Oidc = requested.Oidc
+		changed = true
+	}
+	if requested.X509CaCertificates != "" {
+		f.x509CACertificates[c.Id] = requested.X509CaCertificates
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// errMKSV2FakeOIDCDisabled is mk-api-v2 domain.ErrorOIDCParamsRequiredEnabling.
+var errMKSV2FakeOIDCDisabled = errors.New("oidc parameters cannot be configured when it is disabled")
+
+// normaliseMKSV2FakeOIDC validates and stores OIDC like mk-api-v2: a disabled
+// OIDC with any parameter is rejected (validate/oidc.go), an enabled one gets
+// the claim defaults (validate/cluster.go), ca_certs is trimmed and a
+// disabled OIDC is stored empty (daladapter/kubernetes_options.go).
+func normaliseMKSV2FakeOIDC(oidc mksclient.OIDC) (mksclient.OIDC, error) {
+	if !oidc.Enabled {
+		if oidc != (mksclient.OIDC{}) {
+			return mksclient.OIDC{}, errMKSV2FakeOIDCDisabled
+		}
+
+		return mksclient.OIDC{}, nil
+	}
+	oidc.UsernameClaim = cmp.Or(oidc.UsernameClaim, "sub")
+	oidc.GroupsClaim = cmp.Or(oidc.GroupsClaim, "groups")
+	oidc.CaCerts = strings.TrimSpace(oidc.CaCerts)
+
+	return oidc, nil
+}
+
+// activateCluster is the effect of a finished cluster task.
+func (f *mksV2Fake) activateCluster(id string) func() {
+	return func() {
+		c, ok := f.clusters[id]
+		if ok {
+			c.Status = "ACTIVE"
+			f.clusters[id] = c
+		}
+	}
+}
+
+// deleteCluster removes the cluster when DELETE_CLUSTER is DONE. Like
+// mk-api-v2 handlers/clusters/delete.go:99-113 it answers 409 unless the
+// cluster and its nodegroups are in a status the delete takes.
+func (f *mksV2Fake) deleteCluster(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("cluster_id")
+	c, ok := f.clusters[id]
+	if !ok {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
+
+		return
+	}
+	deletable := slices.Contains([]string{"ACTIVE", "MAINTENANCE", "ERROR"}, string(c.Status))
+	if !deletable {
+		writeMKSV2InvalidStatus(w)
+
+		return
+	}
+
+	// handlers/clusters/delete.go:188-190.
+	c.Status = "PENDING_DELETE"
+	f.clusters[id] = c
+	f.addTask(id, "DELETE_CLUSTER", func() { delete(f.clusters, id) })
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// upgradeCluster moves the cluster to the latest patch version of its minor
+// version, or of the next one, when the task is DONE.
+func (f *mksV2Fake) upgradeCluster(minor bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("cluster_id")
+		c, ok := f.clusters[id]
+		if !ok {
+			writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
+
+			return
+		}
+
+		target, taskType := kubeVersionTrimToMinor, "UPGRADE_PATCH_VERSION"
+		if minor {
+			target, taskType = kubeVersionTrimToMinorIncremented, "UPGRADE_MINOR_VERSION"
+		}
+		targetMinor, err := target(c.KubeVersion)
+		if err != nil {
+			writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, id)
+
+			return
+		}
+		latest, err := latestKubePatchVersions(mksKubeVersionsV2ToV1Views(f.kubeVersions))
+		if err != nil || latest[targetMinor] == "" {
+			writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, id)
+
+			return
+		}
+
+		f.addTask(id, taskType, func() {
+			c := f.clusters[id]
+			c.KubeVersion = latest[targetMinor]
+			f.clusters[id] = c
+		})
+		writeMKSV2JSON(w, http.StatusOK, mksclient.ClusterResp{Cluster: &c})
+	}
+}
+
+// listTasks pages the cluster tasks newest first, like the API.
+func (f *mksV2Fake) listTasks(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("cluster_id")
+	if _, ok := f.clusters[id]; !ok {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
+
+		return
+	}
+
+	var tasks []mksclient.Task
+	for _, t := range slices.Backward(f.tasks) {
+		if t.task.ClusterId == id {
+			tasks = append(tasks, t.task)
+		}
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	tasks = tasks[min(offset, len(tasks)):]
+	if limit > 0 {
+		tasks = tasks[:min(limit, len(tasks))]
+	}
+
+	writeMKSV2JSON(w, http.StatusOK, mksclient.TaskList{Count: int64(len(tasks)), Tasks: tasks})
+}
+
+// getTask finishes a running task: DONE with its effect, or ERROR for a type
+// set by failTasks, which also sets its cluster to ERROR.
+func (f *mksV2Fake) getTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("cluster_id")
+	taskID := r.PathValue("task_id")
+	i := slices.IndexFunc(f.tasks, func(t *mksV2FakeTask) bool { return t.task.Id == taskID && t.task.ClusterId == id })
+	_, clusterExists := f.clusters[id]
+	if !clusterExists {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, id)
+
+		return
+	}
+	if i < 0 {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectTask, taskID)
+
+		return
+	}
+
+	t := f.tasks[i]
+	running := t.task.Status == mksclient.INQUEUE || t.task.Status == mksclient.INPROGRESS
+	switch {
+	case !running || t.stuck || f.stuckTaskTypes[t.task.Type]:
+	case f.failedTaskTypes[t.task.Type]:
+		t.task.Status = mksclient.ERROR
+		t.task.ErrorDetails = &mksclient.TaskErrorDetails{
+			Code: 42, Name: "fake failure", Details: new("fake details of " + t.task.Type),
+		}
+		// A failed task leaves its object in ERROR, which a delete takes.
+		f.updateClusterLocked(id, "ERROR")
+	default:
+		t.task.Status = mksclient.DONE
+		if t.effect != nil {
+			t.effect()
+		}
+	}
+
+	writeMKSV2JSON(w, http.StatusOK, mksclient.TaskResp{Task: t.task})
+}
+
+// addTask starts a task the way an API handler does before it responds.
+func (f *mksV2Fake) addTask(clusterID, taskType string, effect func()) {
+	f.tasks = append(f.tasks, &mksV2FakeTask{
+		task: mksclient.Task{
+			Id:        fmt.Sprintf("task-%d", len(f.tasks)+1),
+			ClusterId: clusterID,
+			Type:      taskType,
+			Status:    mksclient.INPROGRESS,
+		},
+		effect: effect,
+	})
+}
+
+// seedTask adds a task of a nodegroup, or of the cluster when nodegroupID is
+// empty; a stuck one never finishes.
+func (f *mksV2Fake) seedTask(clusterID, nodegroupID, taskType string, stuck bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.addTask(clusterID, taskType, nil)
+	t := f.tasks[len(f.tasks)-1]
+	t.stuck = stuck
+	if nodegroupID != "" {
+		t.task.NodegroupId = &nodegroupID
+	}
+}
+
+// stickTasks keeps the running tasks of taskType running, or lets them finish
+// again when stuck is false.
+func (f *mksV2Fake) stickTasks(taskType string, stuck bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.stuckTaskTypes[taskType] = stuck
+}
+
+// failTasks makes the tasks of taskType started from now on end in ERROR, or
+// finish normally again when failed is false.
+func (f *mksV2Fake) failTasks(taskType string, failed bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.failedTaskTypes[taskType] = failed
+}
+
+// lastBody decodes the last request body of the route.
+func (f *mksV2Fake) lastBody(t *testing.T, route string) map[string]any {
+	t.Helper()
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var body map[string]any
+	err := json.Unmarshal(f.bodies[route], &body)
+	if err != nil {
+		t.Fatalf("decode the last %s body %q: %s", route, f.bodies[route], err)
+	}
+
+	return body
+}
+
+func (f *mksV2Fake) callCount(route string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.calls[route]
+}
+
+// clusterCount is the number of clusters the fake still has.
+func (f *mksV2Fake) clusterCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.clusters)
+}
+
+// updateCluster changes a cluster behind the provider's back.
+func (f *mksV2Fake) updateCluster(id string, update func(c *mksclient.ClusterDetailed)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	c := f.clusters[id]
+	update(&c)
+	f.clusters[id] = c
+}
+
+// removeCluster deletes a cluster behind the provider's back.
+func (f *mksV2Fake) removeCluster(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.clusters, id)
+}
+
+// settleAfter makes the cluster id change to status on its own
+// after it has answered gets more GETs; an empty status removes it.
+func (f *mksV2Fake) settleAfter(id string, gets int, status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.settles[id] = mksV2FakeSettle{gets: gets, status: status}
+}
+
+// settle counts a GET of id and reports the status it reaches with it.
+func (f *mksV2Fake) settle(id string) (string, bool) {
+	s, ok := f.settles[id]
+	if !ok {
+		return "", false
+	}
+	s.gets--
+	if s.gets > 0 {
+		f.settles[id] = s
+
+		return "", false
+	}
+	delete(f.settles, id)
+
+	return s.status, true
+}
+
+// updateClusterLocked sets the cluster status, or removes the cluster when
+// status is empty.
+func (f *mksV2Fake) updateClusterLocked(id, status string) {
+	c, ok := f.clusters[id]
+	if !ok {
+		return
+	}
+	if status == "" {
+		delete(f.clusters, id)
+
+		return
+	}
+	c.Status = mksclient.ClusterDetailedStatus(status)
+	f.clusters[id] = c
+}
+
+// setMKSV2FakeWindow sets a three-hour maintenance window.
+func setMKSV2FakeWindow(c *mksclient.ClusterDetailed, start string) {
+	c.MaintenanceWindowStart = start
+	parsed, err := time.Parse(time.TimeOnly, start)
+	if err != nil {
+		c.MaintenanceWindowEnd = ""
+
+		return
+	}
+	c.MaintenanceWindowEnd = parsed.Add(3 * time.Hour).Format(time.TimeOnly)
+}
+
+func valueOr[T any](v *T, fallback T) T {
+	if v == nil {
+		return fallback
+	}
+
+	return *v
+}
+
+// seedCluster adds a cluster and the kubeconfig the API returns for it.
+// clusterProject returns the project_id the fake returns for the cluster.
+func (f *mksV2Fake) clusterProject(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.clusters[id].ProjectId
 }
 
 func (f *mksV2Fake) seedCluster(c mksclient.ClusterDetailed, kubeconfig string) {
@@ -221,12 +796,40 @@ func (f *mksV2Fake) fail(pattern string, status int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	delete(f.failureBodies, pattern)
 	if status == 0 {
 		delete(f.failures, pattern)
 
 		return
 	}
 	f.failures[pattern] = status
+}
+
+// failWithBody makes the route answer with status and the raw body until the
+// test ends, like a gateway or a status the mk-api-v2 swagger does not declare.
+func (f *mksV2Fake) failWithBody(pattern string, status int, contentType, body string) {
+	f.fail(pattern, status)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.failureBodies[pattern] = mksV2FakeBody{contentType: contentType, body: body}
+}
+
+// lastQuery returns the query string of the last request to the route.
+func (f *mksV2Fake) lastQuery(route string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.queries[route]
+}
+
+// storedX509 returns the X509 CA certificates PATCH stored for the cluster.
+func (f *mksV2Fake) storedX509(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.x509CACertificates[id]
 }
 
 // mksV2FakeAPIProjectID returns a Keystone project ID the way mk-api-v2
@@ -279,10 +882,15 @@ func writeMKSV2JSON(w http.ResponseWriter, status int, body any) {
 // models/objects/objects.go.
 const (
 	mksV2ObjectCluster = "Cluster"
+	mksV2ObjectTask    = "Task"
 )
 
 // mksV2FakeObject names the most specific object of the request path.
 func mksV2FakeObject(r *http.Request) (string, string) {
+	if id := r.PathValue("task_id"); id != "" {
+		return mksV2ObjectTask, id
+	}
+
 	return mksV2ObjectCluster, r.PathValue("cluster_id")
 }
 
@@ -301,4 +909,51 @@ func writeMKSV2Error(w http.ResponseWriter, status int, objectType, id string) {
 	var body mksclient.GenericError
 	body.Error.Message = fmt.Sprintf("fake error %d", status)
 	writeMKSV2JSON(w, status, body)
+}
+
+// writeMKSV2InvalidStatus answers like mk-api-v2 when the cluster or a
+// nodegroup is in a status the operation does not take
+// (domain.ErrorClusterOrNodegroupInvalidStatus).
+func writeMKSV2InvalidStatus(w http.ResponseWriter) {
+	var body mksclient.GenericError
+	body.Error.Message = "cluster or one of nodegroups has invalid status to perform this operation"
+	writeMKSV2JSON(w, http.StatusConflict, body)
+}
+
+// writeMKSV2BadRequest answers a rejected request body with the API message.
+func writeMKSV2BadRequest(w http.ResponseWriter, err error) {
+	var body mksclient.GenericError
+	body.Error.Message = err.Error()
+	writeMKSV2JSON(w, http.StatusBadRequest, body)
+}
+
+// testMKSV2TerraformAtLeast skips the test when the terraform binary the
+// tests run is older than version (major.minor).
+func testMKSV2TerraformAtLeast(t *testing.T, major, minor int) {
+	t.Helper()
+
+	binary := os.Getenv("TF_ACC_TERRAFORM_PATH")
+	if binary == "" {
+		binary = "terraform"
+	}
+	// The binary the SDKv2 harness runs, see TF_ACC_TERRAFORM_PATH.
+	out, err := exec.CommandContext(t.Context(), binary, "version", "-json").Output() //nolint:gosec
+	if err != nil {
+		t.Fatalf("terraform version: %v", err)
+	}
+	var version struct {
+		TerraformVersion string `json:"terraform_version"`
+	}
+	err = json.Unmarshal(out, &version)
+	if err != nil {
+		t.Fatalf("terraform version: %v", err)
+	}
+	var gotMajor, gotMinor int
+	_, err = fmt.Sscanf(version.TerraformVersion, "%d.%d", &gotMajor, &gotMinor)
+	if err != nil {
+		t.Fatalf("terraform version %q: %v", version.TerraformVersion, err)
+	}
+	if gotMajor < major || gotMajor == major && gotMinor < minor {
+		t.Skipf("terraform %s is older than %d.%d", version.TerraformVersion, major, minor)
+	}
 }

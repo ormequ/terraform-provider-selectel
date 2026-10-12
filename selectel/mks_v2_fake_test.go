@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,8 +34,11 @@ import (
 type mksV2Fake struct {
 	server *httptest.Server
 
-	mu                   sync.Mutex
-	clusters             map[string]mksclient.ClusterDetailed
+	mu       sync.Mutex
+	clusters map[string]mksclient.ClusterDetailed
+	// nodegroups are keyed by their ID, which the fake numbers ng-1, ng-2...
+	nodegroups           map[string]mksclient.NodegroupDetailed
+	nodegroupSeq         int
 	kubeconfigs          map[string]string
 	kubeVersions         []mksclient.KubeVersionInfo
 	featureGates         []mksclient.AvailableFeatureGates
@@ -44,12 +48,21 @@ type mksV2Fake struct {
 	// failureBodies maps a route pattern to the raw body its forced failure
 	// answers with instead of the mk-api-v2 error.
 	failureBodies map[string]mksV2FakeBody
-	tasks         []*mksV2FakeTask
+	// callFailures maps a route pattern and a call number to the HTTP status
+	// that call answers with.
+	callFailures map[string]map[int]int
+	// createNodegroupsStatus is the status create answers with after it has
+	// stored the nodegroups, like mk-api-v2 when the task publish fails.
+	createNodegroupsStatus int
+	// concurrentNodegroups are created along with the next create request, as
+	// if someone else created them in the meantime.
+	concurrentNodegroups []mksclient.NodegroupDetailed
+	tasks                []*mksV2FakeTask
 	// failedTaskTypes makes new tasks of a type end in ERROR.
 	failedTaskTypes map[string]bool
 	// stuckTaskTypes keeps the running tasks of a type running.
 	stuckTaskTypes map[string]bool
-	// settles maps a cluster ID to the GETs it answers before
+	// settles maps a cluster or nodegroup ID to the GETs it answers before
 	// its status changes on its own, like after a task the API keeps running.
 	settles map[string]mksV2FakeSettle
 	// x509CACertificates keeps what PATCH stored; the API never returns it.
@@ -114,6 +127,12 @@ const (
 	mksV2RouteUpgradeMinor         = "POST /v2/clusters/{cluster_id}/upgrade-minor-version"
 	mksV2RouteTasks                = "GET /v2/clusters/{cluster_id}/tasks"
 	mksV2RouteTask                 = "GET /v2/clusters/{cluster_id}/tasks/{task_id}"
+	mksV2RouteNodegroups           = "GET /v2/clusters/{cluster_id}/nodegroups"
+	mksV2RouteCreateNodegroups     = "POST /v2/clusters/{cluster_id}/nodegroups"
+	mksV2RouteNodegroup            = "GET /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	mksV2RoutePatchNodegroup       = "PATCH /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	mksV2RouteDeleteNodegroup      = "DELETE /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	mksV2RouteResizeNodegroup      = "POST /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}/resize"
 )
 
 // mksV2FakePollInterval shortens the waiter polls for every test: the fake
@@ -128,10 +147,13 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 
 	f := &mksV2Fake{
 		clusters:    map[string]mksclient.ClusterDetailed{},
+		nodegroups:  map[string]mksclient.NodegroupDetailed{},
 		kubeconfigs: map[string]string{},
 		failures:    map[string]int{},
 
 		failureBodies: map[string]mksV2FakeBody{},
+
+		callFailures: map[string]map[int]int{},
 
 		failedTaskTypes:    map[string]bool{},
 		stuckTaskTypes:     map[string]bool{},
@@ -161,6 +183,12 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	f.handle(mux, mksV2RouteUpgradeMinor, f.upgradeCluster(true))
 	f.handle(mux, mksV2RouteTasks, f.listTasks)
 	f.handle(mux, mksV2RouteTask, f.getTask)
+	f.handle(mux, mksV2RouteNodegroups, f.listNodegroups)
+	f.handle(mux, mksV2RouteCreateNodegroups, f.createNodegroups)
+	f.handle(mux, mksV2RouteNodegroup, f.getNodegroup)
+	f.handle(mux, mksV2RoutePatchNodegroup, f.patchNodegroup)
+	f.handle(mux, mksV2RouteDeleteNodegroup, f.deleteNodegroup)
+	f.handle(mux, mksV2RouteResizeNodegroup, f.resizeNodegroup)
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 
@@ -237,6 +265,9 @@ func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.Hand
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		status, ok := f.failures[pattern]
+		if !ok {
+			status, ok = f.callFailures[pattern][f.calls[pattern]]
+		}
 		if raw, hasBody := f.failureBodies[pattern]; ok && hasBody {
 			w.Header().Set("Content-Type", raw.contentType)
 			w.WriteHeader(status)
@@ -481,6 +512,11 @@ func (f *mksV2Fake) deleteCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deletable := slices.Contains([]string{"ACTIVE", "MAINTENANCE", "ERROR"}, string(c.Status))
+	for _, ng := range f.nodegroups {
+		if ng.ClusterId == id && !mksV2FakeNodegroupDeletable(ng) {
+			deletable = false
+		}
+	}
 	if !deletable {
 		writeMKSV2InvalidStatus(w)
 
@@ -558,7 +594,7 @@ func (f *mksV2Fake) listTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // getTask finishes a running task: DONE with its effect, or ERROR for a type
-// set by failTasks, which also sets its cluster to ERROR.
+// set by failTasks, which also sets its nodegroup or cluster to ERROR.
 func (f *mksV2Fake) getTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("cluster_id")
 	taskID := r.PathValue("task_id")
@@ -585,7 +621,11 @@ func (f *mksV2Fake) getTask(w http.ResponseWriter, r *http.Request) {
 			Code: 42, Name: "fake failure", Details: new("fake details of " + t.task.Type),
 		}
 		// A failed task leaves its object in ERROR, which a delete takes.
-		f.updateClusterLocked(id, "ERROR")
+		if t.task.NodegroupId != nil {
+			f.updateNodegroupLocked(*t.task.NodegroupId, "ERROR")
+		} else {
+			f.updateClusterLocked(id, "ERROR")
+		}
 	default:
 		t.task.Status = mksclient.DONE
 		if t.effect != nil {
@@ -690,7 +730,7 @@ func (f *mksV2Fake) removeCluster(id string) {
 	delete(f.clusters, id)
 }
 
-// settleAfter makes the cluster id change to status on its own
+// settleAfter makes the cluster or nodegroup id change to status on its own
 // after it has answered gets more GETs; an empty status removes it.
 func (f *mksV2Fake) settleAfter(id string, gets int, status string) {
 	f.mu.Lock()
@@ -816,6 +856,20 @@ func (f *mksV2Fake) failWithBody(pattern string, status int, contentType, body s
 	f.failureBodies[pattern] = mksV2FakeBody{contentType: contentType, body: body}
 }
 
+// failCalls makes the given calls of the route, counted from 1 over the whole
+// test, answer with status.
+func (f *mksV2Fake) failCalls(pattern string, status int, calls ...int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.callFailures[pattern] == nil {
+		f.callFailures[pattern] = map[int]int{}
+	}
+	for _, call := range calls {
+		f.callFailures[pattern][call] = status
+	}
+}
+
 // lastQuery returns the query string of the last request to the route.
 func (f *mksV2Fake) lastQuery(route string) string {
 	f.mu.Lock()
@@ -881,14 +935,18 @@ func writeMKSV2JSON(w http.ResponseWriter, status int, body any) {
 // The object types of mk-api-v2 not-found errors, see its
 // models/objects/objects.go.
 const (
-	mksV2ObjectCluster = "Cluster"
-	mksV2ObjectTask    = "Task"
+	mksV2ObjectCluster   = "Cluster"
+	mksV2ObjectNodegroup = "Nodegroup"
+	mksV2ObjectTask      = "Task"
 )
 
 // mksV2FakeObject names the most specific object of the request path.
 func mksV2FakeObject(r *http.Request) (string, string) {
 	if id := r.PathValue("task_id"); id != "" {
 		return mksV2ObjectTask, id
+	}
+	if id := r.PathValue("nodegroup_id"); id != "" {
+		return mksV2ObjectNodegroup, id
 	}
 
 	return mksV2ObjectCluster, r.PathValue("cluster_id")
@@ -925,6 +983,362 @@ func writeMKSV2BadRequest(w http.ResponseWriter, err error) {
 	var body mksclient.GenericError
 	body.Error.Message = err.Error()
 	writeMKSV2JSON(w, http.StatusBadRequest, body)
+}
+
+// listNodegroups lists the nodegroups of the cluster.
+func (f *mksV2Fake) listNodegroups(w http.ResponseWriter, r *http.Request) {
+	clusterID := r.PathValue("cluster_id")
+	if _, ok := f.clusters[clusterID]; !ok {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, clusterID)
+
+		return
+	}
+
+	items := []mksclient.NodegroupListItem{}
+	for _, id := range slices.Sorted(maps.Keys(f.nodegroups)) {
+		ng := f.nodegroups[id]
+		if ng.ClusterId != clusterID {
+			continue
+		}
+		items = append(items, mksclient.NodegroupListItem{
+			Id:                       ng.Id,
+			ClusterId:                ng.ClusterId,
+			Segment:                  ng.Segment,
+			Status:                   mksclient.NodegroupListItemStatus(ng.Status),
+			Nodes:                    ng.Nodes,
+			Labels:                   ng.Labels,
+			CloudNodegroupConfig:     ng.CloudNodegroupConfig,
+			DedicatedNodegroupConfig: ng.DedicatedNodegroupConfig,
+		})
+	}
+
+	writeMKSV2JSON(w, http.StatusOK, mksclient.NodegroupList{Nodegroups: items})
+}
+
+// mksV2FakeFlavors are the flavors whose specs the fake applies like mk-api-v2
+// validate/flavor.go: a local disk forces local_volume, a volume spec
+// replaces volume_gb. Other flavor IDs have neither.
+var mksV2FakeFlavors = map[string]struct {
+	localDisk bool
+	volumeGB  int64
+}{
+	"local-1013":  {localDisk: true},
+	"volume-1013": {volumeGB: 50},
+}
+
+// createNodegroups fills what the API defaults and starts a CLUSTER_RESIZE
+// task per nodegroup, which adds the nodes. Like the API it answers 204 with
+// no body and never returns the CIDR of a cloud nodegroup.
+func (f *mksV2Fake) createNodegroups(w http.ResponseWriter, r *http.Request) {
+	clusterID := r.PathValue("cluster_id")
+	if _, ok := f.clusters[clusterID]; !ok {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, clusterID)
+
+		return
+	}
+	var body mksclient.NodegroupsCreateBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil || len(body.Nodegroups) == 0 {
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectCluster, clusterID)
+
+		return
+	}
+
+	for _, opts := range body.Nodegroups {
+		cloud := valueOrZero(opts.CloudNodegroupConfig)
+		if cloud.FlavorId == "" && valueOr(opts.InstallNvidiaDevicePlugin, false) {
+			// validate/flavor.go ErrorInstallNDPWithoutFlavor.
+			writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, "")
+
+			return
+		}
+	}
+	for _, ng := range f.concurrentNodegroups {
+		f.nodegroups[ng.Id] = ng
+	}
+	f.concurrentNodegroups = nil
+
+	for _, opts := range body.Nodegroups {
+		f.nodegroupSeq++
+		id := fmt.Sprintf("ng-%d", f.nodegroupSeq)
+		cloud := valueOrZero(opts.CloudNodegroupConfig)
+		if cloud.FlavorId != "" {
+			flavor := mksV2FakeFlavors[cloud.FlavorId]
+			cloud.LocalVolume = cloud.LocalVolume || flavor.localDisk
+			cloud.VolumeGb = cmp.Or(flavor.volumeGB, cloud.VolumeGb)
+		}
+		f.nodegroups[id] = mksclient.NodegroupDetailed{
+			Id:                        id,
+			ClusterId:                 clusterID,
+			Segment:                   opts.Segment,
+			Status:                    mksclient.NodegroupDetailedStatusPENDINGCREATE,
+			NodegroupType:             mksclient.NodegroupDetailedNodegroupTypeSTANDARD,
+			EnableAutoscale:           valueOr(opts.EnableAutoscale, false),
+			AutoscaleMinNodes:         new(valueOr(opts.AutoscaleMinNodes, 0)),
+			AutoscaleMaxNodes:         new(valueOr(opts.AutoscaleMaxNodes, 0)),
+			InstallNvidiaDevicePlugin: valueOr(opts.InstallNvidiaDevicePlugin, false),
+			Preemptible:               opts.Preemptible,
+			Labels:                    valueOr(opts.Labels, map[string]string{}),
+			Taints:                    valueOr(opts.Taints, []mksclient.NodegroupTaint{}),
+			UserData:                  opts.UserData,
+			Nodes:                     []mksclient.Node{},
+			CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{
+				FlavorId:    cmp.Or(cloud.FlavorId, "fake-flavor"),
+				VolumeGb:    cloud.VolumeGb,
+				VolumeType:  cloud.VolumeType,
+				LocalVolume: cloud.LocalVolume,
+			},
+		}
+		count := opts.Count
+		f.addNodegroupTask(clusterID, id, "CLUSTER_RESIZE", func() {
+			ng := f.nodegroups[id]
+			ng.Status = mksclient.NodegroupDetailedStatusACTIVE
+			ng.Nodes = mksV2FakeNodes(id, count)
+			f.nodegroups[id] = ng
+		})
+	}
+
+	if f.createNodegroupsStatus != 0 {
+		writeMKSV2Error(w, f.createNodegroupsStatus, mksV2ObjectCluster, clusterID)
+
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// failCreateNodegroupsAfterStore makes create store the nodegroups and then
+// answer with status, or answer normally again when status is 0.
+func (f *mksV2Fake) failCreateNodegroupsAfterStore(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.createNodegroupsStatus = status
+}
+
+// createConcurrently makes the next create request add ng as well.
+func (f *mksV2Fake) createConcurrently(ng mksclient.NodegroupDetailed) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.concurrentNodegroups = append(f.concurrentNodegroups, ng)
+}
+
+// nodegroup returns the nodegroup of the request path, or answers 404.
+func (f *mksV2Fake) nodegroup(w http.ResponseWriter, r *http.Request) (mksclient.NodegroupDetailed, bool) {
+	clusterID, id := r.PathValue("cluster_id"), r.PathValue("nodegroup_id")
+	ng, ok := f.nodegroups[id]
+	if _, clusterExists := f.clusters[clusterID]; !clusterExists {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectCluster, clusterID)
+
+		return ng, false
+	}
+	if !ok || ng.ClusterId != clusterID {
+		writeMKSV2Error(w, http.StatusNotFound, mksV2ObjectNodegroup, id)
+
+		return ng, false
+	}
+
+	return ng, true
+}
+
+// getNodegroup returns the segment as availability_zone only, like mk-api-v2;
+// the list returns it as segment.
+func (f *mksV2Fake) getNodegroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("nodegroup_id")
+	if status, settled := f.settle(id); settled {
+		f.updateNodegroupLocked(id, status)
+	}
+	ng, ok := f.nodegroup(w, r)
+	if ok {
+		segment := ng.Segment
+		ng.Segment, ng.AvailabilityZone = "", &segment
+		writeMKSV2JSON(w, http.StatusOK, mksclient.NodegroupResp{Nodegroup: ng})
+	}
+}
+
+// patchNodegroup applies autoscale settings at once and labels and taints
+// with their tasks, like the API.
+func (f *mksV2Fake) patchNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroup(w, r)
+	if !ok {
+		return
+	}
+	var body mksclient.NodegroupUpdateBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil {
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
+
+		return
+	}
+	opts := body.Nodegroup
+
+	ng.EnableAutoscale = valueOr(opts.EnableAutoscale, ng.EnableAutoscale)
+	if opts.AutoscaleMinNodes != nil {
+		ng.AutoscaleMinNodes = new(int64(*opts.AutoscaleMinNodes))
+	}
+	if opts.AutoscaleMaxNodes != nil {
+		ng.AutoscaleMaxNodes = new(int64(*opts.AutoscaleMaxNodes))
+	}
+	f.nodegroups[ng.Id] = ng
+
+	id := ng.Id
+	if opts.Labels != nil {
+		f.addNodegroupTask(ng.ClusterId, id, "UPDATE_NODEGROUP_LABELS", func() {
+			ng := f.nodegroups[id]
+			ng.Labels = *opts.Labels
+			f.nodegroups[id] = ng
+		})
+	}
+	if opts.Taints != nil {
+		f.addNodegroupTask(ng.ClusterId, id, "UPDATE_NODEGROUP_TAINTS", func() {
+			ng := f.nodegroups[id]
+			ng.Taints = *opts.Taints
+			f.nodegroups[id] = ng
+		})
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *mksV2Fake) resizeNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroup(w, r)
+	if !ok {
+		return
+	}
+	var body mksclient.NodegroupResizeBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil {
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
+
+		return
+	}
+
+	if int(body.Nodegroup.Desired) == len(ng.Nodes) {
+		// handlers/nodegroups/resize.go ErrorNodegroupResizeSameCount.
+		writeMKSV2Error(w, http.StatusBadRequest, mksV2ObjectNodegroup, ng.Id)
+
+		return
+	}
+
+	id := ng.Id
+	f.addNodegroupTask(ng.ClusterId, id, "NODE_GROUP_RESIZE", func() {
+		ng := f.nodegroups[id]
+		ng.Nodes = mksV2FakeNodes(id, body.Nodegroup.Desired)
+		f.nodegroups[id] = ng
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteNodegroup removes the nodegroup when its CLUSTER_RESIZE task is DONE.
+// Like mk-api-v2 handlers/nodegroups/delete.go:143-149 it answers 409 unless
+// the cluster and the nodegroup are in a status the delete takes.
+func (f *mksV2Fake) deleteNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroup(w, r)
+	if !ok {
+		return
+	}
+	clusterStatus := string(f.clusters[ng.ClusterId].Status)
+	if !slices.Contains([]string{"ACTIVE", "PENDING_UPDATE_CONTROL_PLANE_LOGS"}, clusterStatus) || !mksV2FakeNodegroupDeletable(ng) {
+		writeMKSV2InvalidStatus(w)
+
+		return
+	}
+
+	ng.Status = mksclient.NodegroupDetailedStatusPENDINGDELETE
+	f.nodegroups[ng.Id] = ng
+	id := ng.Id
+	f.addNodegroupTask(ng.ClusterId, id, "CLUSTER_RESIZE", func() { delete(f.nodegroups, id) })
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// mksV2FakeNodegroupDeletable reports whether a delete takes the nodegroup
+// status, see mk-lib status.ValidStatusesForDeleteNodegroup.
+func mksV2FakeNodegroupDeletable(ng mksclient.NodegroupDetailed) bool {
+	return ng.Status == mksclient.NodegroupDetailedStatusACTIVE || ng.Status == mksclient.NodegroupDetailedStatusERROR
+}
+
+func (f *mksV2Fake) addNodegroupTask(clusterID, nodegroupID, taskType string, effect func()) {
+	f.addTask(clusterID, taskType, effect)
+	f.tasks[len(f.tasks)-1].task.NodegroupId = &nodegroupID
+}
+
+func mksV2FakeNodes(nodegroupID string, count int64) []mksclient.Node {
+	nodes := make([]mksclient.Node, count)
+	for i := range nodes {
+		nodes[i] = mksclient.Node{
+			Id:          fmt.Sprintf("%s-node-%d", nodegroupID, i+1),
+			Ip:          fmt.Sprintf("198.51.100.%d", i+1),
+			Hostname:    fmt.Sprintf("%s-node-%d", nodegroupID, i+1),
+			NodegroupId: nodegroupID,
+		}
+	}
+
+	return nodes
+}
+
+// seedNodegroup adds a nodegroup the provider did not create.
+func (f *mksV2Fake) seedNodegroup(ng mksclient.NodegroupDetailed) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.nodegroups[ng.Id] = ng
+}
+
+// updateNodegroup changes a nodegroup behind the provider's back.
+func (f *mksV2Fake) updateNodegroup(id string, update func(ng *mksclient.NodegroupDetailed)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ng := f.nodegroups[id]
+	update(&ng)
+	f.nodegroups[id] = ng
+}
+
+// updateNodegroupLocked sets the nodegroup status, or removes the nodegroup
+// when status is empty.
+func (f *mksV2Fake) updateNodegroupLocked(id, status string) {
+	ng, ok := f.nodegroups[id]
+	if !ok {
+		return
+	}
+	if status == "" {
+		delete(f.nodegroups, id)
+
+		return
+	}
+	ng.Status = mksclient.NodegroupDetailedStatus(status)
+	f.nodegroups[id] = ng
+}
+
+// removeNodegroup deletes a nodegroup behind the provider's back.
+func (f *mksV2Fake) removeNodegroup(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.nodegroups, id)
+}
+
+// clientPools returns the pool of every client built so far.
+func (f *mksV2Fake) clientPools() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	pools := make([]string, len(f.clients))
+	for i, c := range f.clients {
+		pools[i] = c.pool
+	}
+
+	return pools
+}
+
+// hasNodegroup reports whether the fake still has the nodegroup.
+func (f *mksV2Fake) hasNodegroup(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	_, ok := f.nodegroups[id]
+
+	return ok
 }
 
 // testMKSV2TerraformAtLeast skips the test when the terraform binary the

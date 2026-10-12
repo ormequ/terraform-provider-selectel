@@ -23,6 +23,7 @@ import (
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/cluster"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
+	"github.com/selectel/mks-go/v2/pkg/nodegroup"
 	"github.com/selectel/mks-go/v2/pkg/task"
 )
 
@@ -416,10 +417,12 @@ func isMKSV2NotFound(err error) bool {
 	return errors.As(err, &mksErr) && mksErr.StatusCode == http.StatusNotFound
 }
 
-// The statuses mk-api-v2 deletes in, see mk-lib status.ValidStatusesForDeleteCluster.
-// Any other status answers 409.
+// The statuses mk-api-v2 deletes in, see mk-lib status.ValidStatusesForDeleteCluster
+// and status.ValidStatusesForDeleteNodegroup. Any other status answers 409.
 var (
-	mksV2ClusterDeleteStatuses = []string{"ACTIVE", "MAINTENANCE", "ERROR"}
+	mksV2ClusterDeleteStatuses          = []string{"ACTIVE", "MAINTENANCE", "ERROR"}
+	mksV2NodegroupDeleteClusterStatuses = []string{"ACTIVE", "PENDING_UPDATE_CONTROL_PLANE_LOGS"}
+	mksV2NodegroupDeleteStatuses        = []string{"ACTIVE", "ERROR"}
 )
 
 // mksV2Status is the status of an object and the statuses a delete takes.
@@ -520,6 +523,16 @@ func (w *mksV2TaskWaiter) Wait(ctx context.Context) error {
 func (w *mksV2TaskWaiter) WaitClusterDeleted(ctx context.Context) error {
 	return w.waitDeleted(ctx, func() error {
 		_, err := cluster.Get(ctx, w.client, w.clusterID)
+
+		return err
+	})
+}
+
+// WaitNodegroupDeleted polls until the nodegroup of the waiter scope is gone
+// and fails when one of the new tasks fails first.
+func (w *mksV2TaskWaiter) WaitNodegroupDeleted(ctx context.Context) error {
+	return w.waitDeleted(ctx, func() error {
+		_, err := nodegroup.Get(ctx, w.client, w.clusterID, w.nodegroupID)
 
 		return err
 	})

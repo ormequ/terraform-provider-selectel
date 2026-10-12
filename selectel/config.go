@@ -31,6 +31,9 @@ type Config struct {
 	lock           sync.Mutex
 
 	UserAgent string
+
+	// mksV2Client replaces newMKSV2Client when set, which only tests do.
+	mksV2Client mksV2ClientFunc
 }
 
 func getConfig(d *schema.ResourceData, userAgent string) (*Config, diag.Diagnostics) {

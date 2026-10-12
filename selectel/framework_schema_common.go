@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/identityschema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/defaults"
@@ -54,6 +55,23 @@ func projectIDFrameworkIdentitySchema() identityschema.StringAttribute {
 	return identityschema.StringAttribute{
 		RequiredForImport: true,
 		Description:       projectIDDescription + " " + projectIDFromControlPanel + " " + projectIDLearnMore,
+	}
+}
+
+func (r resourceDocs) regionFrameworkDataSourceSchema() dsschema.StringAttribute {
+	return dsschema.StringAttribute{
+		Required:    true,
+		Description: r.regionDescription() + " " + regionLearnMore,
+	}
+}
+
+// projectIDFrameworkDataSourceSchema falls back to the provider project_id,
+// so the attribute is also Computed.
+func projectIDFrameworkDataSourceSchema() dsschema.StringAttribute {
+	return dsschema.StringAttribute{
+		Optional:    true,
+		Computed:    true,
+		Description: projectIDDescription + " " + projectIDFromProvider + " " + projectIDFromResource + " " + projectIDLearnMore,
 	}
 }
 

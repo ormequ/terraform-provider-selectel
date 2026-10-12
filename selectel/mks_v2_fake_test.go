@@ -11,8 +11,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -1339,35 +1337,4 @@ func (f *mksV2Fake) hasNodegroup(id string) bool {
 	_, ok := f.nodegroups[id]
 
 	return ok
-}
-
-// testMKSV2TerraformAtLeast skips the test when the terraform binary the
-// tests run is older than version (major.minor).
-func testMKSV2TerraformAtLeast(t *testing.T, major, minor int) {
-	t.Helper()
-
-	binary := os.Getenv("TF_ACC_TERRAFORM_PATH")
-	if binary == "" {
-		binary = "terraform"
-	}
-	// The binary the SDKv2 harness runs, see TF_ACC_TERRAFORM_PATH.
-	out, err := exec.CommandContext(t.Context(), binary, "version", "-json").Output() //nolint:gosec
-	if err != nil {
-		t.Fatalf("terraform version: %v", err)
-	}
-	var version struct {
-		TerraformVersion string `json:"terraform_version"`
-	}
-	err = json.Unmarshal(out, &version)
-	if err != nil {
-		t.Fatalf("terraform version: %v", err)
-	}
-	var gotMajor, gotMinor int
-	_, err = fmt.Sscanf(version.TerraformVersion, "%d.%d", &gotMajor, &gotMinor)
-	if err != nil {
-		t.Fatalf("terraform version %q: %v", version.TerraformVersion, err)
-	}
-	if gotMajor < major || gotMajor == major && gotMinor < minor {
-		t.Skipf("terraform %s is older than %d.%d", version.TerraformVersion, major, minor)
-	}
 }

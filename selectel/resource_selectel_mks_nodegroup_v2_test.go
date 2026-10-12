@@ -2,12 +2,14 @@ package selectel
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
@@ -1031,6 +1033,19 @@ func TestMKSNodegroupV2Pool(t *testing.T) {
 	}
 }
 
+// testMKSNodegroupV2Private is a private state of plain keys.
+type testMKSNodegroupV2Private map[string][]byte
+
+func (p testMKSNodegroupV2Private) GetKey(_ context.Context, key string) ([]byte, diag.Diagnostics) {
+	return p[key], nil
+}
+
+func (p testMKSNodegroupV2Private) SetKey(_ context.Context, key string, value []byte) diag.Diagnostics {
+	p[key] = value
+
+	return nil
+}
+
 // TestMKSNodegroupV2ResourceDashedProviderProject creates a node group with
 // the provider project in the dashed form mk-api-v2 returns: the clients take
 // it without dashes.
@@ -1056,6 +1071,32 @@ func TestMKSNodegroupV2ResourceDashedProviderProject(t *testing.T) {
 	})
 
 	fake.checkClients(t, testMKSV2KeystoneProject)
+}
+
+// TestMKSNodegroupV2CheckMovedProject compares the _v1 project of a moved
+// node group with the provider one in their Keystone form.
+func TestMKSNodegroupV2CheckMovedProject(t *testing.T) {
+	tests := []struct {
+		name, movedProject, providerProject string
+		wantError                           bool
+	}{
+		{name: "same form", movedProject: testMKSV2KeystoneProject, providerProject: testMKSV2KeystoneProject},
+		{name: "dashed moved project", movedProject: testMKSV2APIProject, providerProject: testMKSV2KeystoneProject},
+		{name: "dashed provider project", movedProject: testMKSV2KeystoneProject, providerProject: testMKSV2APIProject},
+		{name: "other project", movedProject: "other-project", providerProject: testMKSV2KeystoneProject, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &mksNodegroupV2Resource{mksV2Provided{config: &Config{ProjectID: tt.providerProject}}}
+			private := testMKSNodegroupV2Private{mksNodegroupV2MovedProjectKey: []byte(fmt.Sprintf("%q", tt.movedProject))}
+
+			diags := r.checkMovedProject(t.Context(), private)
+			if diags.HasError() != tt.wantError {
+				t.Errorf("checkMovedProject() = %v, want an error: %t", diags, tt.wantError)
+			}
+		})
+	}
 }
 
 const testMKSNodegroupV2Flavor = `

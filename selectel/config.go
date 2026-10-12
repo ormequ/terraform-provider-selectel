@@ -34,6 +34,9 @@ type Config struct {
 
 	// mksV2Client replaces newMKSV2Client when set, which only tests do.
 	mksV2Client mksV2ClientFunc
+	// dedicatedURL replaces the dedicated servers API URL of the _v2 price
+	// plan lookup when set, which only tests do.
+	dedicatedURL string
 }
 
 func getConfig(d *schema.ResourceData, userAgent string) (*Config, diag.Diagnostics) {

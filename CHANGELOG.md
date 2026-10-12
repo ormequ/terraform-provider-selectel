@@ -4,7 +4,7 @@ FEATURES:
 
 * Add new resources:
   * `selectel_mks_cluster_v2`
-  * `selectel_mks_nodegroup_v2`, with cloud node groups
+  * `selectel_mks_nodegroup_v2`, with cloud and dedicated node groups
 * Add new data sources:
   * `selectel_mks_kubeconfig_v2`
   * `selectel_mks_kube_versions_v2`

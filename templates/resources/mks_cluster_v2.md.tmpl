@@ -62,7 +62,7 @@ The resource waits for the cluster tasks of every operation. When a task fails, 
 
 * `maintenance_window_start` - (Optional) Time in UTC when maintenance in the cluster starts. The format is `hh:mm:ss`. Learn more about the [Maintenance window](https://docs.selectel.ru/en/cloud/managed-kubernetes/clusters/set-up-maintenance-window/).
 
-* `enable_autorepair` - (Optional) Enables or disables node auto-repairing. Boolean flag, the default value is `true`. Learn more about [Nodes auto-repairing](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/reinstall-nodes/).
+* `enable_autorepair` - (Optional) Enables or disables node auto-repairing. Boolean flag. If omitted, a new cluster gets `true` for `workers_type = "CLOUD"` and `false` for `workers_type = "DEDICATED"`, and an existing cluster keeps its current value. Auto-repairing is not available for dedicated workers: the API turns it off, so `true` with `workers_type = "DEDICATED"` fails the plan. Learn more about [Nodes auto-repairing](https://docs.selectel.ru/en/cloud/managed-kubernetes/node-groups/reinstall-nodes/).
 
 * `enable_patch_version_auto_upgrade` - (Optional) Enables or disables auto-upgrading of the cluster to the latest available Kubernetes patch version during the maintenance window. If omitted, it is enabled for all cluster types except `BASIC`. Cannot be `true` when `cluster_type` is `BASIC`. Learn more about [Patch versions auto-upgrading](https://docs.selectel.ru/en/managed-kubernetes/clusters/upgrade-version/#update-patch-release).
 

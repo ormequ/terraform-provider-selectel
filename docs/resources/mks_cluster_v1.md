@@ -6,6 +6,8 @@ description: |-
 
 # selectel\_mks\_cluster\_v1
 
+-> **Note:** For new configurations, use [selectel_mks_cluster_v2](https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/mks_cluster_v2).
+
 Creates and manages a Managed Kubernetes cluster using public API v1. For more information about Managed Kubernetes, see the [official Selectel documentation](https://docs.selectel.ru/en/cloud/managed-kubernetes/).
 
 ## Example usage

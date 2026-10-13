@@ -12,16 +12,26 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
+	ihttptest "github.com/terraform-providers/terraform-provider-selectel/selectel/internal/httptest"
 	"github.com/terraform-providers/terraform-provider-selectel/version"
 )
 
-// mksV2Fake is an in-memory mk-api-v2 behind httptest.Server. Tests seed it,
-// serve the provider with its clients through providerFactories and read what
-// the provider sent.
+// mksV2FakePools are the pools the fake Keystone catalog holds an mk-api-v2
+// endpoint for, and mksV2FakeAuthRegion is its own identity region.
+var mksV2FakePools = []string{testMKSV2Pool}
+
+const mksV2FakeAuthRegion = "test"
+
+// mksV2FakePoolKey is the request context key of the pool a server answers for.
+type mksV2FakePoolKey struct{}
+
+// mksV2Fake is an in-memory mk-api-v2 behind httptest.Server, one per pool,
+// and a fake Keystone that lists them in its catalog. Tests seed it, serve the
+// provider through providerFactories, so that the provider authenticates and
+// finds the endpoint like in production, and read what the provider sent.
 type mksV2Fake struct {
-	server *httptest.Server
+	keystone *ihttptest.Keystone
 
 	mu                   sync.Mutex
 	clusters             map[string]mksclient.ClusterDetailed
@@ -32,14 +42,15 @@ type mksV2Fake struct {
 	// failures maps a route pattern to the HTTP status it answers with.
 	failures map[string]int
 
-	// clients records every client built, userAgents every request, and
-	// configUserAgent is the User-Agent of the provider Config.
-	clients         []mksV2FakeClient
-	userAgents      []string
+	// requests records every request, and configUserAgent is the User-Agent
+	// of the provider Config.
+	requests        []mksV2FakeRequest
 	configUserAgent string
 }
 
-type mksV2FakeClient struct {
+// mksV2FakeRequest is a request to mk-api-v2 with the project its token was
+// issued for and the pool of the server that got it.
+type mksV2FakeRequest struct {
 	projectID string
 	pool      string
 	userAgent string
@@ -83,8 +94,16 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 	f.handle(mux, mksV2RouteAdmissionControllers, func(w http.ResponseWriter, _ *http.Request) {
 		writeMKSV2JSON(w, http.StatusOK, mksclient.AdmissionControllersList{AdmissionControllers: &f.admissionControllers})
 	})
-	f.server = httptest.NewServer(mux)
-	t.Cleanup(f.server.Close)
+
+	endpoints := make([]ihttptest.Endpoint, 0, len(mksV2FakePools))
+	for _, pool := range mksV2FakePools {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), mksV2FakePoolKey{}, pool)))
+		}))
+		t.Cleanup(server.Close)
+		endpoints = append(endpoints, ihttptest.Endpoint{Type: MKS, Region: pool, URL: server.URL + "/v1"})
+	}
+	f.keystone = ihttptest.NewKeystone(t, mksV2FakeAuthRegion, endpoints...)
 
 	return f
 }
@@ -116,7 +135,8 @@ func (f *mksV2Fake) providerFactories() map[string]func() (tfprotov6.ProviderSer
 	}
 }
 
-// config builds the provider Config like getConfig, but for this test only.
+// config builds the provider Config like getConfig, but for this test only
+// and with the fake Keystone as the auth URL.
 func (f *mksV2Fake) config(userAgent string, attr func(key string) string) *Config {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -124,31 +144,38 @@ func (f *mksV2Fake) config(userAgent string, attr func(key string) string) *Conf
 	f.configUserAgent = userAgent
 
 	return &Config{
-		ProjectID: attr("project_id"),
-		Region:    attr("region"),
-		UserAgent: userAgent,
-		mksV2Client: func(_ context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error) {
-			f.mu.Lock()
-			f.clients = append(f.clients, mksV2FakeClient{projectID: projectID, pool: pool, userAgent: config.UserAgent})
-			f.mu.Unlock()
-			// Keystone answers 401 for a project scope by the dashed form.
-			if projectID != mksV2KeystoneProjectID(projectID) && mksV2FakeAPIProjectID(mksV2KeystoneProjectID(projectID)) == projectID {
-				return nil, fmt.Errorf("authentication failed for project %q", projectID)
-			}
-
-			return newMKSV2ServiceClient("fake-token", f.server.URL, config.UserAgent)
-		},
+		ProjectID:  attr("project_id"),
+		Region:     attr("region"),
+		UserAgent:  userAgent,
+		AuthURL:    f.keystone.AuthURL(),
+		AuthRegion: mksV2FakeAuthRegion,
+		DomainName: "test",
+		Username:   "test",
+		Password:   "test",
 	}
 }
 
-// handle registers a route that records the User-Agent and answers with a
-// forced failure when one is set.
+// handle registers a route that records the request, answers 401 to a token
+// the fake Keystone did not issue, and answers with a forced failure when one
+// is set.
 func (f *mksV2Fake) handle(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 
-		f.userAgents = append(f.userAgents, r.Header.Get("User-Agent"))
+		projectID, authorized := f.keystone.Project(r.Header.Get("X-Auth-Token"))
+		pool, _ := r.Context().Value(mksV2FakePoolKey{}).(string)
+		f.requests = append(f.requests, mksV2FakeRequest{
+			projectID: projectID,
+			pool:      pool,
+			userAgent: r.Header.Get("User-Agent"),
+		})
+		if !authorized {
+			writeMKSV2Error(w, http.StatusUnauthorized, "", "")
+
+			return
+		}
+
 		status, ok := f.failures[pattern]
 		if ok {
 			objectType, id := mksV2FakeObject(r)
@@ -229,20 +256,9 @@ func (f *mksV2Fake) fail(pattern string, status int) {
 	f.failures[pattern] = status
 }
 
-// mksV2FakeAPIProjectID returns a Keystone project ID the way mk-api-v2
-// returns it, as a dashed UUID (apiadapter/clusters.go). An ID that is not 32
-// characters long stays as is.
-func mksV2FakeAPIProjectID(projectID string) string {
-	if len(projectID) != 32 {
-		return projectID
-	}
-
-	return projectID[:8] + "-" + projectID[8:12] + "-" + projectID[12:16] + "-" + projectID[16:20] + "-" + projectID[20:]
-}
-
-// checkClients fails the test unless every client was built for the Keystone
-// form of projectID and every request carried the User-Agent of the provider
-// Config.
+// checkClients fails the test unless there was a request and every request
+// carried a token issued for the Keystone form of projectID and the User-Agent
+// of the provider Config.
 func (f *mksV2Fake) checkClients(t *testing.T, projectID string) {
 	t.Helper()
 
@@ -251,20 +267,15 @@ func (f *mksV2Fake) checkClients(t *testing.T, projectID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if len(f.clients) == 0 || len(f.userAgents) == 0 {
-		t.Fatalf("the fake mk-api-v2 got %d clients and %d requests, want both > 0", len(f.clients), len(f.userAgents))
+	if len(f.requests) == 0 {
+		t.Fatal("the fake mk-api-v2 got no requests, want > 0")
 	}
-	for _, c := range f.clients {
-		if c.projectID != projectID {
-			t.Errorf("client built for project %q, want %q", c.projectID, projectID)
+	for _, r := range f.requests {
+		if r.projectID != projectID {
+			t.Errorf("request sent with a token for project %q, want %q", r.projectID, projectID)
 		}
-		if c.userAgent == "" || c.userAgent != f.configUserAgent {
-			t.Errorf("client built with User-Agent %q, want the Config one %q", c.userAgent, f.configUserAgent)
-		}
-	}
-	for _, userAgent := range f.userAgents {
-		if userAgent != f.configUserAgent {
-			t.Errorf("request sent with User-Agent %q, want %q", userAgent, f.configUserAgent)
+		if r.userAgent != f.configUserAgent {
+			t.Errorf("request sent with User-Agent %q, want the Config one %q", r.userAgent, f.configUserAgent)
 		}
 	}
 }

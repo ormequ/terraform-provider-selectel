@@ -18,10 +18,8 @@ import (
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 )
 
-// mksV2ClientFunc builds the mk-api-v2 client for every _v2 resource and
-// data source.
-type mksV2ClientFunc func(ctx context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error)
-
+// newMKSV2Client builds the mk-api-v2 client for every _v2 resource and data
+// source.
 func newMKSV2Client(_ context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error) {
 	selvpcClient, err := config.GetSelVPCClientWithProjectScope(projectID)
 	if err != nil {
@@ -43,7 +41,13 @@ func newMKSV2Client(_ context.Context, config *Config, projectID, pool string) (
 		return nil, err
 	}
 
-	return newMKSV2ServiceClient(selvpcClient.GetXAuthToken(), baseURL, config.UserAgent)
+	client, err := mksv2.NewMKSClientV2(selvpcClient.GetXAuthToken(), baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("can't init mks v2 client: %w", err)
+	}
+	client.UserAgent = config.UserAgent
+
+	return client, nil
 }
 
 // mksV2BaseURL turns the catalog endpoint of mk-api into the mk-api-v2 base
@@ -56,17 +60,6 @@ func mksV2BaseURL(endpoint string) (string, error) {
 	}
 
 	return endpointURL.Scheme + "://" + endpointURL.Host, nil
-}
-
-// newMKSV2ServiceClient is the part of newMKSV2Client that needs no Keystone.
-func newMKSV2ServiceClient(token, baseURL, userAgent string) (*mksv2.ServiceClient, error) {
-	client, err := mksv2.NewMKSClientV2(token, baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("can't init mks v2 client: %w", err)
-	}
-	client.UserAgent = userAgent
-
-	return client, nil
 }
 
 // mksV2ProjectID returns the project_id attribute as set, or the provider one
@@ -129,11 +122,7 @@ func (p *mksV2Provided) client(ctx context.Context, projectIDAttr types.String, 
 		return nil, "", diags
 	}
 
-	clientFn := newMKSV2Client
-	if p.config.mksV2Client != nil {
-		clientFn = p.config.mksV2Client
-	}
-	client, err := clientFn(ctx, p.config, mksV2KeystoneProjectID(projectID), pool)
+	client, err := newMKSV2Client(ctx, p.config, mksV2KeystoneProjectID(projectID), pool)
 	if err != nil {
 		diags.AddError("Error initializing MKS client", err.Error())
 

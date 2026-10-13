@@ -12,8 +12,6 @@ import (
 	"github.com/selectel/mks-go/v2/pkg/cluster"
 )
 
-var mksKubeconfigV2Docs = resourceDocs{Name: "cluster"}
-
 var _ datasource.DataSourceWithConfigure = &mksKubeconfigV2DataSource{}
 
 func newMKSKubeconfigV2DataSource() datasource.DataSource {
@@ -42,17 +40,17 @@ func (d *mksKubeconfigV2DataSource) Metadata(_ context.Context, req datasource.M
 
 func (d *mksKubeconfigV2DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provides a kubeconfig file and its fields for a Managed Kubernetes cluster using mk-api-v2.",
+		Description: "Provides a kubeconfig file and its fields for a Selectel Managed Kubernetes cluster.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
-				Description: mksKubeconfigV2Docs.idDescription() + ".",
+				Description: mksV2ClusterDocs.idDescription() + ".",
 			},
 			"project_id": projectIDFrameworkDataSourceSchema(),
-			"pool":       mksKubeconfigV2Docs.regionFrameworkDataSourceSchema(),
+			"pool":       mksV2ClusterDocs.regionFrameworkDataSourceSchema(),
 			"cluster_id": schema.StringAttribute{
 				Required:    true,
-				Description: mksKubeconfigV2Docs.idDescription() + ".",
+				Description: mksV2ClusterDocs.idDescription() + ".",
 			},
 			"raw_config": schema.StringAttribute{
 				Computed:    true,

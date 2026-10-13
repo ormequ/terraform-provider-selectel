@@ -44,7 +44,7 @@ func TestMKSKubeVersionsV2DataSourceBasic(t *testing.T) {
 		},
 	})
 
-	fake.checkClients(t, "attribute-project")
+	fake.checkClients(t, "attribute-project", testMKSV2Pool)
 }
 
 func TestMKSKubeVersionsV2DataSourceProjectID(t *testing.T) {
@@ -94,7 +94,7 @@ func TestMKSKubeVersionsV2DataSourceProjectID(t *testing.T) {
 			})
 
 			if tt.wantError == nil {
-				fake.checkClients(t, tt.wantProjectID)
+				fake.checkClients(t, tt.wantProjectID, testMKSV2Pool)
 			}
 		})
 	}

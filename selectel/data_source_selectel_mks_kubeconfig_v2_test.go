@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
@@ -62,13 +63,13 @@ func TestMKSKubeconfigV2DataSourceBasic(t *testing.T) {
 		},
 	})
 
-	fake.checkClients(t, "attribute-project")
+	fake.checkClients(t, "attribute-project", testMKSV2Pool)
 }
 
 func TestMKSKubeconfigV2DataSourceProviderProjectID(t *testing.T) {
 	t.Parallel()
 
-	// The dashed provider project is the form mk-api-v2 returns: the data
+	// The dashed provider project is the form MKS API v2 returns: the data
 	// source and the client take it without dashes, like _v1.
 	for _, providerProject := range []string{"provider-project", testMKSV2APIProject} {
 		t.Run(providerProject, func(t *testing.T) {
@@ -87,7 +88,7 @@ func TestMKSKubeconfigV2DataSourceProviderProjectID(t *testing.T) {
 				},
 			})
 
-			fake.checkClients(t, mksV2KeystoneProjectID(providerProject))
+			fake.checkClients(t, mksV2KeystoneProjectID(providerProject), testMKSV2Pool)
 		})
 	}
 }
@@ -196,5 +197,31 @@ func TestMKSKubeconfigV2DataSourceSensitive(t *testing.T) {
 		if !sensitive[name] {
 			t.Errorf("attribute %s is not Sensitive", name)
 		}
+	}
+}
+
+func TestParseMKSKubeconfigV2MissingField(t *testing.T) {
+	t.Parallel()
+
+	for _, field := range []string{"certificate-authority-data", "server", "client-certificate-data", "client-key-data"} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+
+			lines := strings.Split(testMKSKubeconfigV2, "\n")
+			kept := lines[:0]
+			for _, line := range lines {
+				if !strings.Contains(line, field) {
+					kept = append(kept, line)
+				}
+			}
+
+			_, err := parseMKSKubeconfigV2([]byte(strings.Join(kept, "\n")))
+			if err == nil {
+				t.Fatalf("parseMKSKubeconfigV2 accepted a kubeconfig without %s", field)
+			}
+			if !strings.Contains(err.Error(), field) {
+				t.Errorf("error %q does not name the field %s", err, field)
+			}
+		})
 	}
 }

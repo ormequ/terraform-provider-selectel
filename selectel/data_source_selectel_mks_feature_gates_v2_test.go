@@ -120,7 +120,7 @@ func TestMKSFeatureGatesV2DataSource(t *testing.T) {
 				if wantProjectID == "" {
 					wantProjectID = tt.providerProjectID
 				}
-				fake.checkClients(t, wantProjectID)
+				fake.checkClients(t, wantProjectID, testMKSV2Pool)
 			}
 		})
 	}

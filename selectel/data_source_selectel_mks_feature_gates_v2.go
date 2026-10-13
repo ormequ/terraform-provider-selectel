@@ -9,14 +9,12 @@ import (
 	kubeoptionsv2 "github.com/selectel/mks-go/v2/pkg/kubeoptions"
 )
 
-var _ datasource.DataSourceWithConfigure = &mksKubeOptionsV2DataSource{}
-
 func newMKSFeatureGatesV2DataSource() datasource.DataSource {
 	return &mksKubeOptionsV2DataSource{
 		typeName:    "_mks_feature_gates_v2",
 		attribute:   "feature_gates",
 		object:      objectFeatureGates,
-		description: "Provides a list of feature gates available in Managed Kubernetes using mk-api-v2.",
+		description: "Provides a list of feature gates available in Selectel Managed Kubernetes.",
 		docs: mksKubeOptionsV2Docs{
 			filter:            "Values to filter available feature gates.",
 			filterKubeVersion: "Kubernetes version for which you get available feature gates.",

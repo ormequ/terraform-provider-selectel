@@ -14,7 +14,7 @@ func newMKSAdmissionControllersV2DataSource() datasource.DataSource {
 		typeName:    "_mks_admission_controllers_v2",
 		attribute:   "admission_controllers",
 		object:      objectAdmissionControllers,
-		description: "Provides a list of admission controllers available in Managed Kubernetes using mk-api-v2.",
+		description: "Provides a list of admission controllers available in Selectel Managed Kubernetes.",
 		docs: mksKubeOptionsV2Docs{
 			filter:            "Values to filter available admission controllers.",
 			filterKubeVersion: "Kubernetes version for which you get available admission controllers.",

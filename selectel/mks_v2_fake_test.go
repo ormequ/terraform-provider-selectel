@@ -17,16 +17,18 @@ import (
 	"github.com/terraform-providers/terraform-provider-selectel/version"
 )
 
-// mksV2FakePools are the pools the fake Keystone catalog holds an mk-api-v2
-// endpoint for, and mksV2FakeAuthRegion is its own identity region.
-var mksV2FakePools = []string{testMKSV2Pool}
+// mksV2FakePools are the pools the fake Keystone catalog holds an MKS API v2
+// endpoint for, and mksV2FakeAuthRegion is its own identity region. The other
+// pool comes first, so a client that takes the first catalog endpoint hits the
+// wrong server.
+var mksV2FakePools = []string{"ru-1", testMKSV2Pool}
 
 const mksV2FakeAuthRegion = "test"
 
 // mksV2FakePoolKey is the request context key of the pool a server answers for.
 type mksV2FakePoolKey struct{}
 
-// mksV2Fake is an in-memory mk-api-v2 behind httptest.Server, one per pool,
+// mksV2Fake is an in-memory MKS API v2 behind httptest.Server, one per pool,
 // and a fake Keystone that lists them in its catalog. Tests seed it, serve the
 // provider through providerFactories, so that the provider authenticates and
 // finds the endpoint like in production, and read what the provider sent.
@@ -48,7 +50,7 @@ type mksV2Fake struct {
 	configUserAgent string
 }
 
-// mksV2FakeRequest is a request to mk-api-v2 with the project its token was
+// mksV2FakeRequest is a request to MKS API v2 with the project its token was
 // issued for and the pool of the server that got it.
 type mksV2FakeRequest struct {
 	projectID string
@@ -57,7 +59,7 @@ type mksV2FakeRequest struct {
 }
 
 // testMKSV2KeystoneProject is a project ID the way Keystone takes it, and
-// testMKSV2APIProject is the same project the way mk-api-v2 returns it.
+// testMKSV2APIProject is the same project the way MKS API v2 returns it.
 const (
 	testMKSV2KeystoneProject = "35b965e88e5948488eed5e509833033c"
 	testMKSV2APIProject      = "35b965e8-8e59-4848-8eed-5e509833033c"
@@ -101,7 +103,7 @@ func newMKSV2Fake(t *testing.T) *mksV2Fake {
 			mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), mksV2FakePoolKey{}, pool)))
 		}))
 		t.Cleanup(server.Close)
-		endpoints = append(endpoints, ihttptest.Endpoint{Type: MKS, Region: pool, URL: server.URL + "/v1"})
+		endpoints = append(endpoints, ihttptest.Endpoint{Type: MKSV2, Region: pool, URL: server.URL + "/v2"})
 	}
 	f.keystone = ihttptest.NewKeystone(t, mksV2FakeAuthRegion, endpoints...)
 
@@ -257,9 +259,9 @@ func (f *mksV2Fake) fail(pattern string, status int) {
 }
 
 // checkClients fails the test unless there was a request and every request
-// carried a token issued for the Keystone form of projectID and the User-Agent
-// of the provider Config.
-func (f *mksV2Fake) checkClients(t *testing.T, projectID string) {
+// reached the server of pool, carried a token issued for the Keystone form of
+// projectID and the User-Agent of the provider Config.
+func (f *mksV2Fake) checkClients(t *testing.T, projectID, pool string) {
 	t.Helper()
 
 	projectID = mksV2KeystoneProjectID(projectID)
@@ -268,11 +270,14 @@ func (f *mksV2Fake) checkClients(t *testing.T, projectID string) {
 	defer f.mu.Unlock()
 
 	if len(f.requests) == 0 {
-		t.Fatal("the fake mk-api-v2 got no requests, want > 0")
+		t.Fatal("the fake MKS API v2 got no requests, want > 0")
 	}
 	for _, r := range f.requests {
 		if r.projectID != projectID {
 			t.Errorf("request sent with a token for project %q, want %q", r.projectID, projectID)
+		}
+		if r.pool != pool {
+			t.Errorf("request sent to the server of pool %q, want %q", r.pool, pool)
 		}
 		if r.userAgent != f.configUserAgent {
 			t.Errorf("request sent with User-Agent %q, want the Config one %q", r.userAgent, f.configUserAgent)
@@ -286,8 +291,7 @@ func writeMKSV2JSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// The object types of mk-api-v2 not-found errors, see its
-// models/objects/objects.go.
+// The object types of MKS API v2 not-found errors.
 const (
 	mksV2ObjectCluster = "Cluster"
 )
@@ -297,7 +301,7 @@ func mksV2FakeObject(r *http.Request) (string, string) {
 	return mksV2ObjectCluster, r.PathValue("cluster_id")
 }
 
-// writeMKSV2Error answers like mk-api-v2 handlers/common/errors.go: a 404
+// writeMKSV2Error answers like MKS API v2: a 404
 // names the object type in the message and carries the ID in error.id.
 func writeMKSV2Error(w http.ResponseWriter, status int, objectType, id string) {
 	if status == http.StatusNotFound {

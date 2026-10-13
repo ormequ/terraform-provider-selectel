@@ -12,8 +12,6 @@ import (
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
 )
 
-var mksKubeVersionsV2Docs = resourceDocs{Name: "cluster"}
-
 var _ datasource.DataSourceWithConfigure = &mksKubeVersionsV2DataSource{}
 
 func newMKSKubeVersionsV2DataSource() datasource.DataSource {
@@ -39,14 +37,14 @@ func (d *mksKubeVersionsV2DataSource) Metadata(_ context.Context, req datasource
 
 func (d *mksKubeVersionsV2DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Provides a list of Kubernetes versions available in Managed Kubernetes using mk-api-v2.",
+		Description: "Provides a list of Kubernetes versions supported in a Selectel Managed Kubernetes cluster.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
 				Description: "Checksum of the version list.",
 			},
 			"project_id": projectIDFrameworkDataSourceSchema(),
-			"pool":       mksKubeVersionsV2Docs.regionFrameworkDataSourceSchema(),
+			"pool":       mksV2ClusterDocs.regionFrameworkDataSourceSchema(),
 			"latest_version": schema.StringAttribute{
 				Computed:    true,
 				Description: "The latest available Kubernetes version.",

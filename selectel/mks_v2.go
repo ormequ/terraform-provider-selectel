@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -18,7 +17,7 @@ import (
 	mksv2 "github.com/selectel/mks-go/v2/pkg"
 )
 
-// newMKSV2Client builds the mk-api-v2 client for every _v2 resource and data
+// newMKSV2Client builds the MKS API v2 client for every _v2 resource and data
 // source.
 func newMKSV2Client(_ context.Context, config *Config, projectID, pool string) (*mksv2.ServiceClient, error) {
 	selvpcClient, err := config.GetSelVPCClientWithProjectScope(projectID)
@@ -26,22 +25,17 @@ func newMKSV2Client(_ context.Context, config *Config, projectID, pool string) (
 		return nil, fmt.Errorf("can't get project-scope selvpc client for mks: %w", err)
 	}
 
-	err = validateRegion(selvpcClient, MKS, pool)
+	err = validateRegion(selvpcClient, MKSV2, pool)
 	if err != nil {
 		return nil, fmt.Errorf("can't validate pool: %w", err)
 	}
 
-	endpoint, err := selvpcClient.Catalog.GetEndpoint(MKS, pool)
+	endpoint, err := selvpcClient.Catalog.GetEndpoint(MKSV2, pool)
 	if err != nil {
 		return nil, fmt.Errorf("can't get endpoint to init mks client: %w", err)
 	}
 
-	baseURL, err := mksV2BaseURL(endpoint.URL)
-	if err != nil {
-		return nil, err
-	}
-
-	client, err := mksv2.NewMKSClientV2(selvpcClient.GetXAuthToken(), baseURL)
+	client, err := mksv2.NewMKSClientV2(selvpcClient.GetXAuthToken(), mksV2BaseURL(endpoint.URL))
 	if err != nil {
 		return nil, fmt.Errorf("can't init mks v2 client: %w", err)
 	}
@@ -50,16 +44,11 @@ func newMKSV2Client(_ context.Context, config *Config, projectID, pool string) (
 	return client, nil
 }
 
-// mksV2BaseURL turns the catalog endpoint of mk-api into the mk-api-v2 base
-// URL: the endpoint ends with /v1, while the v2 client paths start with /v2/,
-// so only the scheme and the host are kept.
-func mksV2BaseURL(endpoint string) (string, error) {
-	endpointURL, err := url.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("can't parse mks endpoint %q: %w", endpoint, err)
-	}
-
-	return endpointURL.Scheme + "://" + endpointURL.Host, nil
+// mksV2BaseURL turns the catalog endpoint into the base URL of the MKS API v2
+// client: the endpoint ends with /v2 (https://ru-7.mks.selcloud.ru/v2), while
+// the mks-go v2 request paths start with /v2/, so the suffix is trimmed.
+func mksV2BaseURL(endpoint string) string {
+	return strings.TrimSuffix(strings.TrimSuffix(endpoint, "/"), "/v2")
 }
 
 // mksV2ProjectID returns the project_id attribute as set, or the provider one
@@ -82,7 +71,7 @@ func mksV2ProjectID(attr types.String, config *Config) (string, diag.Diagnostics
 }
 
 // mksV2KeystoneProjectID returns the project ID in the form Keystone scopes a
-// token by and _v1 stores: lower-case hex without dashes. mk-api-v2 returns
+// token by and _v1 stores: lower-case hex without dashes. MKS API v2 returns
 // project_id as a dashed UUID, and Keystone answers 401 for that form.
 func mksV2KeystoneProjectID(projectID string) string {
 	return strings.ToLower(strings.ReplaceAll(projectID, "-", ""))
@@ -114,7 +103,7 @@ func (p *mksV2Provided) configure(providerData any) diag.Diagnostics {
 	return diags
 }
 
-// client resolves the project ID and builds the mk-api-v2 client for its
+// client resolves the project ID and builds the MKS API v2 client for its
 // Keystone form. It returns the project ID as resolved, for the state.
 func (p *mksV2Provided) client(ctx context.Context, projectIDAttr types.String, pool string) (*mksv2.ServiceClient, string, diag.Diagnostics) {
 	projectID, diags := mksV2ProjectID(projectIDAttr, p.config)
@@ -141,7 +130,7 @@ func (d *mksV2DataSource) Configure(_ context.Context, req datasource.ConfigureR
 	resp.Diagnostics.Append(d.configure(req.ProviderData)...)
 }
 
-// valueOrZero dereferences an optional field of an mk-api-v2 model.
+// valueOrZero dereferences an optional field of an MKS API v2 model.
 func valueOrZero[T any](v *T) T {
 	if v == nil {
 		var zero T
@@ -151,6 +140,8 @@ func valueOrZero[T any](v *T) T {
 
 	return *v
 }
+
+var _ datasource.DataSourceWithConfigure = &mksKubeOptionsV2DataSource{}
 
 // mksKubeOptionsV2DataSource serves selectel_mks_feature_gates_v2 and
 // selectel_mks_admission_controllers_v2, which differ only in names and the
@@ -188,7 +179,7 @@ var mksKubeOptionV2Type = types.ObjectType{AttrTypes: map[string]attr.Type{
 	"names":        types.SetType{ElemType: types.StringType},
 }}
 
-var mksKubeOptionsV2PoolDocs = resourceDocs{Name: "cluster"}
+var mksV2ClusterDocs = resourceDocs{Name: "cluster"}
 
 func (d *mksKubeOptionsV2DataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + d.typeName
@@ -203,7 +194,7 @@ func (d *mksKubeOptionsV2DataSource) Schema(_ context.Context, _ datasource.Sche
 				Description: "Checksum of the returned list.",
 			},
 			"project_id": projectIDFrameworkDataSourceSchema(),
-			"pool":       mksKubeOptionsV2PoolDocs.regionFrameworkDataSourceSchema(),
+			"pool":       mksV2ClusterDocs.regionFrameworkDataSourceSchema(),
 			"filter": dsschema.SetNestedAttribute{
 				Optional:    true,
 				Description: d.docs.filter,

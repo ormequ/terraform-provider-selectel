@@ -77,6 +77,16 @@ func (d DataSource) ID() dsschema.StringAttribute {
 // ProjectID is the project to search in.
 func (d DataSource) ProjectID() dsschema.StringAttribute { return d.scope(projectIDField) }
 
+// OptionalProjectID is the project to search in. When it is omitted, the
+// project_id of the provider configuration is used, so the found value is
+// computed.
+func (d DataSource) OptionalProjectID() dsschema.StringAttribute {
+	field := projectIDField
+	field.Behavior = "If omitted, the `project_id` of the provider configuration is used."
+
+	return d.String(dsschema.StringAttribute{Optional: true, Computed: true}, field)
+}
+
 // Region is the pool to search in.
 func (d DataSource) Region() dsschema.StringAttribute {
 	return d.scope(regionField(d.Name, d.Location))

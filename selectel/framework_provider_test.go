@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/mks"
 	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/schemadoc"
 )
 
@@ -21,10 +22,16 @@ type testFrameworkProvider struct {
 	*frameworkProvider
 }
 
+// DataSources adds the data sources that only tests serve: the mux check and
+// the _v2 MKS ones until the provider registers them.
 func (p testFrameworkProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
-	return append(p.frameworkProvider.DataSources(ctx), func() datasource.DataSource {
-		return &muxTestDataSource{}
-	})
+	return append(p.frameworkProvider.DataSources(ctx),
+		func() datasource.DataSource { return &muxTestDataSource{} },
+		mks.NewKubeconfigDataSource,
+		mks.NewKubeVersionsDataSource,
+		mks.NewFeatureGatesDataSource,
+		mks.NewAdmissionControllersDataSource,
+	)
 }
 
 type muxTestDataSource struct {
@@ -103,6 +110,7 @@ func TestProviderServerSchema(t *testing.T) {
 			assert.Contains(t, resp.ResourceSchemas, "selectel_compute_volume_v3")
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_compute_volume_v3")
 			assert.Contains(t, resp.DataSourceSchemas, "selectel_mux_test")
+			assert.Contains(t, resp.DataSourceSchemas, "selectel_mks_kubeconfig_v2")
 			for _, attribute := range resp.Provider.Block.Attributes {
 				assert.Equal(t, attribute.Name == "password", attribute.Sensitive, attribute.Name)
 			}
@@ -173,7 +181,8 @@ func nullConfig(t *testing.T, s *tfprotov6.Schema) *tfprotov6.DynamicValue {
 // Run it alone with make schemadoc.
 func TestSchemaDocumentation(t *testing.T) {
 	ctx := context.Background()
-	p := &frameworkProvider{}
+	// testFrameworkProvider adds the data sources not registered yet.
+	p := testFrameworkProvider{&frameworkProvider{}}
 	for _, newResource := range p.Resources(ctx) {
 		res := newResource()
 		var metadata resource.MetadataResponse

@@ -121,6 +121,17 @@ func TestEnumInDataSource(t *testing.T) {
 	}
 }
 
+func TestOptionalProjectID(t *testing.T) {
+	attribute := schemadoc.DataSource{Name: "cluster"}.OptionalProjectID()
+	assert.Equal(t, "Unique identifier of the associated project, for example, `a07abc12310546f1b9291ab3013a7d75`. "+
+		"If omitted, the `project_id` of the provider configuration is used. "+
+		"You can retrieve the project ID from the [selectel_vpc_project_v2]"+
+		"(https://registry.terraform.io/providers/selectel/selectel/latest/docs/resources/vpc_project_v2) resource. "+
+		"Learn more about [Projects](https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/).",
+		attribute.MarkdownDescription)
+	assert.True(t, attribute.Optional && attribute.Computed && !attribute.Required)
+}
+
 func TestSourceLinks(t *testing.T) {
 	assert.Equal(t, "You can retrieve the ID with the [selectel_compute_volume_v3]"+
 		"(https://registry.terraform.io/providers/selectel/selectel/latest/docs/data-sources/compute_volume_v3) data source.",

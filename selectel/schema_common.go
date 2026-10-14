@@ -15,8 +15,6 @@ const (
 
 	projectIDFromControlPanel = "To get the project ID, in the [Control panel](https://my.selectel.ru/vpc/), go to **Products** ⟶ **Cloud Servers** ⟶ project name ⟶ copy the ID of the required project."
 
-	projectIDFromProvider = "If omitted, the `project_id` of the provider configuration is used."
-
 	projectIDLearnMore = "Learn more about [Projects](https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/)."
 	regionLearnMore    = "Learn more about available pools in [Product availability by location](https://docs.selectel.ru/en/infrastructure/product-availability-by-location/)."
 

@@ -1,10 +1,10 @@
 package selectel
 
 import (
-	"strings"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMKSV2BaseURL(t *testing.T) {
@@ -31,13 +31,10 @@ func TestMKSV2BaseURL(t *testing.T) {
 func TestMKSV2ClientUnknownPool(t *testing.T) {
 	t.Parallel()
 	fake := newMKSV2Fake(t)
-	p := &mksV2Provided{config: fake.config("test", func(string) string { return "" })}
+	config := fake.config("test", func(string) string { return "" })
 
-	_, _, diags := p.client(t.Context(), types.StringValue("attribute-project"), "ru-0")
-	if !diags.HasError() {
-		t.Fatal("client accepted a pool the catalog has no endpoint for")
-	}
-	if !strings.Contains(diags[0].Detail(), "region value must contain one of the values") {
-		t.Errorf("unexpected error: %s", diags[0].Detail())
-	}
+	client, err := config.MKSV2Client(t.Context(), "attributeproject", "ru-0")
+	require.Error(t, err, "client accepted a pool the catalog has no endpoint for")
+	assert.Nil(t, client)
+	assert.Contains(t, err.Error(), "region value must contain one of the values")
 }

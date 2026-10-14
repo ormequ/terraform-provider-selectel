@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/mks"
 	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/schemadoc"
 )
 
@@ -26,10 +27,10 @@ type testFrameworkProvider struct {
 func (p testFrameworkProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return append(p.frameworkProvider.DataSources(ctx),
 		func() datasource.DataSource { return &muxTestDataSource{} },
-		newMKSKubeconfigV2DataSource,
-		newMKSKubeVersionsV2DataSource,
-		newMKSFeatureGatesV2DataSource,
-		newMKSAdmissionControllersV2DataSource,
+		mks.NewKubeconfigDataSource,
+		mks.NewKubeVersionsDataSource,
+		mks.NewFeatureGatesDataSource,
+		mks.NewAdmissionControllersDataSource,
 	)
 }
 
@@ -180,7 +181,8 @@ func nullConfig(t *testing.T, s *tfprotov6.Schema) *tfprotov6.DynamicValue {
 // Run it alone with make schemadoc.
 func TestSchemaDocumentation(t *testing.T) {
 	ctx := context.Background()
-	p := &frameworkProvider{}
+	// testFrameworkProvider adds the data sources not registered yet.
+	p := testFrameworkProvider{&frameworkProvider{}}
 	for _, newResource := range p.Resources(ctx) {
 		res := newResource()
 		var metadata resource.MetadataResponse

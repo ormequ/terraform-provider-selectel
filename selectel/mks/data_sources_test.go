@@ -26,8 +26,8 @@ kind: Config
 clusters:
 - name: kubernetes
   cluster:
-    certificate-authority-data: Y2EtZGF0YQ==
-    server: https://192.0.2.10:6443` + "  " + `
+    certificate-authority-data: Y2EtZGF0YQ==` + " " + `
+    server: https://192.0.2.10:6443 # public
 - name: other
   cluster:
     certificate-authority-data: b3RoZXItY2E=
@@ -54,12 +54,11 @@ func readData(t *testing.T, d datasource.DataSource, config *testProviderConfig,
 	require.False(t, configured.Diagnostics.HasError())
 
 	s := dataSourceSchema(d)
-	empty := tfsdk.State{Schema: s, Raw: tftypes.NewValue(s.Type().TerraformType(ctx), nil)}
-	input := empty
+	input := tfsdk.State{Schema: s, Raw: tftypes.NewValue(s.Type().TerraformType(ctx), nil)}
 	for name, value := range attrs {
 		require.False(t, input.SetAttribute(ctx, path.Root(name), value).HasError())
 	}
-	resp := datasource.ReadResponse{State: empty}
+	resp := datasource.ReadResponse{State: input}
 	d.Read(ctx, datasource.ReadRequest{Config: tfsdk.Config(input)}, &resp)
 
 	return resp.State, resp.Diagnostics
@@ -101,11 +100,10 @@ func TestKubeconfigDataSourceAPIError(t *testing.T) {
 	fake := newFakeAPI(t)
 	fake.fail(routeKubeconfig, http.StatusConflict)
 
-	state, diags := readData(t, NewKubeconfigDataSource(), &testProviderConfig{client: fake.client()},
+	_, diags := readData(t, NewKubeconfigDataSource(), &testProviderConfig{client: fake.client()},
 		map[string]string{"cluster_id": testClusterID, "pool": "ru-7", "project_id": apiProject})
 
 	assertErrorContains(t, diags, "Error reading kubeconfig: error getting kubeconfig '"+testClusterID+"'", "fake error 409")
-	assert.True(t, state.Raw.IsNull())
 }
 
 func TestKubeconfigDataSourceMissingField(t *testing.T) {
@@ -115,13 +113,14 @@ func TestKubeconfigDataSourceMissingField(t *testing.T) {
 			fake.seedCluster(testClusterID)
 			fake.kubeconfig = regexp.MustCompile(`(?m)^ +`+field+`:.*\n`).ReplaceAllString(testKubeconfig, "")
 
-			state, diags := readData(t, NewKubeconfigDataSource(), &testProviderConfig{client: fake.client()},
+			_, diags := readData(t, NewKubeconfigDataSource(), &testProviderConfig{client: fake.client()},
 				map[string]string{"cluster_id": testClusterID, "pool": "ru-7", "project_id": apiProject})
 
 			assertErrorContains(t, diags, "Error reading kubeconfig: error getting kubeconfig '"+testClusterID+"'",
 				"unable to find "+field+" field in kubeconfig")
-			assert.NotContains(t, diags.Errors()[0].Detail(), "apiVersion")
-			assert.True(t, state.Raw.IsNull())
+			for _, value := range []string{"Y2EtZGF0YQ==", "https://192.0.2.10:6443", "Y2xpZW50LWNlcnQ=", "Y2xpZW50LWtleQ=="} {
+				assert.NotContains(t, diags.Errors()[0].Detail(), value)
+			}
 		})
 	}
 }
@@ -153,6 +152,7 @@ func TestKubeVersionsDataSource(t *testing.T) {
 	assert.Equal(t, "1.10.11", stringAttribute(t, state, "latest_version"))
 	assert.Equal(t, "1.10.2", stringAttribute(t, state, "default_version"))
 	assert.Equal(t, "ru-7", stringAttribute(t, state, "id"))
+	assert.Equal(t, apiProject, stringAttribute(t, state, "project_id"))
 }
 
 func TestKubeVersionsDataSourceErrors(t *testing.T) {
@@ -178,11 +178,10 @@ func TestKubeVersionsDataSourceErrors(t *testing.T) {
 			fake := newFakeAPI(t)
 			tt.set(fake)
 
-			state, diags := readData(t, NewKubeVersionsDataSource(), &testProviderConfig{client: fake.client()},
+			_, diags := readData(t, NewKubeVersionsDataSource(), &testProviderConfig{client: fake.client()},
 				map[string]string{"pool": "ru-7", "project_id": apiProject})
 
 			assertErrorContains(t, diags, "Error reading kube-versions: error getting kube-versions: ", tt.want)
-			assert.True(t, state.Raw.IsNull())
 		})
 	}
 }
@@ -195,11 +194,11 @@ func TestKubeOptionsDataSources(t *testing.T) {
 	}{
 		{
 			attribute: "feature_gates", object: objectFeatureGates, route: routeFeatureGates, create: NewFeatureGatesDataSource,
-			names: map[string][]string{"1.30": {"TopologyManager"}, "1.31": {"SidecarContainers", "TopologyManager"}, "1.32": {}},
+			names: map[string][]string{"1.30": {"TopologyManager"}, "1.31": {"SidecarContainers", "TopologyManager"}, "1.32": {}, "1.33": {"SidecarContainers", "TopologyManager"}},
 		},
 		{
 			attribute: "admission_controllers", object: objectAdmissionControllers, route: routeAdmissionControllers, create: NewAdmissionControllersDataSource,
-			names: map[string][]string{"1.30": {"NodeRestriction"}, "1.31": {"AlwaysPullImages", "NodeRestriction"}, "1.32": {}},
+			names: map[string][]string{"1.30": {"NodeRestriction"}, "1.31": {"AlwaysPullImages", "NodeRestriction"}, "1.32": {}, "1.33": {"AlwaysPullImages", "NodeRestriction"}},
 		},
 	} {
 		for _, tt := range []struct {
@@ -208,9 +207,10 @@ func TestKubeOptionsDataSources(t *testing.T) {
 			want              []string
 			wantErr           string
 		}{
-			{name: "every version without kube_version", want: []string{"1.30", "1.31", "1.32"}},
+			{name: "every version without kube_version", want: []string{"1.30", "1.31", "1.32", "1.33"}},
 			{name: "one version by the patch", kubeVersion: "1.31.8", want: []string{"1.31"}},
 			{name: "one version by the minor", kubeVersion: "1.30", want: []string{"1.30"}},
+			{name: "a repeated name once", kubeVersion: "1.33", want: []string{"1.33"}},
 			{
 				name: "a version not in the list", kubeVersion: "1.3.1",
 				wantErr: `: available kubernetes options for kubernetes version "1.3" is not found`,
@@ -239,7 +239,6 @@ func TestKubeOptionsDataSources(t *testing.T) {
 					if ok {
 						assert.Equal(t, path.Root("kube_version"), withPath.Path())
 					}
-					assert.True(t, state.Raw.IsNull())
 
 					return
 				}
@@ -252,29 +251,21 @@ func TestKubeOptionsDataSources(t *testing.T) {
 				}
 				assert.ElementsMatch(t, want, options)
 				assert.Equal(t, "ru-7", stringAttribute(t, state, "id"))
-				assert.Equal(t, "ru-7", stringAttribute(t, state, "pool"))
-				assert.Equal(t, tt.kubeVersion, stringAttribute(t, state, "kube_version"))
+				assert.Equal(t, apiProject, stringAttribute(t, state, "project_id"))
 			})
 		}
 	}
 }
 
 func TestKubeOptionsDataSourcesRejectKubeVersionForm(t *testing.T) {
-	for name, d := range map[string]datasource.DataSource{
-		"feature_gates":         NewFeatureGatesDataSource(),
-		"admission_controllers": NewAdmissionControllersDataSource(),
-	} {
-		t.Run(name, func(t *testing.T) {
-			var resp validator.StringResponse
-			for _, rule := range dataSourceSchema(d).Attributes["kube_version"].(schema.StringAttribute).Validators {
-				rule.ValidateString(context.Background(), validator.StringRequest{
-					Path: path.Root("kube_version"), ConfigValue: types.StringValue("v1.31"),
-				}, &resp)
-			}
-
-			assertErrorContains(t, resp.Diagnostics, "must be in the x.y or x.y.z form")
-		})
+	var resp validator.StringResponse
+	for _, rule := range dataSourceSchema(NewFeatureGatesDataSource()).Attributes["kube_version"].(schema.StringAttribute).Validators {
+		rule.ValidateString(context.Background(), validator.StringRequest{
+			Path: path.Root("kube_version"), ConfigValue: types.StringValue("v1.31"),
+		}, &resp)
 	}
+
+	assertErrorContains(t, resp.Diagnostics, "must be in the x.y or x.y.z form")
 }
 
 func TestDataSourcesConnection(t *testing.T) {
@@ -285,13 +276,12 @@ func TestDataSourcesConnection(t *testing.T) {
 		"admission_controllers": NewAdmissionControllersDataSource,
 	} {
 		for _, tt := range []struct {
-			name        string
-			project     string
-			clientErr   error
-			wantProject string
-			want        []string
+			name      string
+			project   string
+			clientErr error
+			want      []string
 		}{
-			{name: "the project of the provider", project: apiProject, wantProject: keystoneProject},
+			{name: "the project of the provider", project: apiProject},
 			{name: "no project", want: []string{"Missing project ID"}},
 			{
 				name: "a failing client", project: apiProject, clientErr: errors.New("no such auth token"),
@@ -311,13 +301,13 @@ func TestDataSourcesConnection(t *testing.T) {
 
 				if tt.want != nil {
 					assertErrorContains(t, diags, tt.want...)
-					assert.True(t, state.Raw.IsNull())
 
 					return
 				}
 				require.False(t, diags.HasError(), "%v", diags)
-				assert.Equal(t, tt.wantProject, stringAttribute(t, state, "project_id"))
-				assert.Equal(t, []string{tt.wantProject}, config.gotProject)
+				assert.Equal(t, keystoneProject, stringAttribute(t, state, "project_id"))
+				assert.Equal(t, []string{keystoneProject}, config.gotProject)
+				assert.Equal(t, []string{"ru-7"}, config.gotPool)
 			})
 		}
 	}

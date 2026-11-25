@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -51,12 +50,8 @@ func (d *kubeconfigDataSource) Schema(_ context.Context, _ datasource.SchemaRequ
 				Definition: "Unique identifier of the cluster.",
 				Source:     schemadoc.FromResource("selectel_mks_cluster_v2", "cluster ID"),
 			}),
-			"pool": dataSourceDocs.Region(),
-			"project_id": dataSourceDocs.String(schema.StringAttribute{
-				Optional:   true,
-				Computed:   true,
-				Validators: []validator.String{schemadoc.LengthAtLeast(1)},
-			}, projectIDField),
+			"pool":            dataSourceDocs.Region(),
+			"project_id":      dataSourceProjectID,
 			"raw_config":      sensitive("Raw content of a kubeconfig file."),
 			"server":          sensitive("IP address and port for a Kube API server."),
 			"cluster_ca_cert": sensitive("CA certificate of the cluster."),
@@ -99,14 +94,14 @@ func (d *kubeconfigDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		{"client-certificate-data", &config.ClientCert},
 		{"client-key-data", &config.ClientKey},
 	} {
-		match := regexp.MustCompile(`(?m)^[ \t]*` + field.name + `:[ \t]*(\S.*)$`).FindSubmatch(raw)
+		match := regexp.MustCompile(`(?m)^[ \t]*` + field.name + `:[ \t]*(\S+)`).FindSubmatch(raw)
 		if match == nil {
 			err = fmt.Errorf("unable to find %s field in kubeconfig", field.name)
 			resp.Diagnostics.AddError("Error reading "+objectKubeConfig, errGettingObject(objectKubeConfig, clusterID, err).Error())
 
 			return
 		}
-		*field.value = types.StringValue(strings.TrimSpace(string(match[1])))
+		*field.value = types.StringValue(string(match[1]))
 	}
 
 	config.ID = config.ClusterID

@@ -69,10 +69,13 @@ func NewAdmissionControllersDataSource() datasource.DataSource {
 }
 
 func kubeOptionsOf(kubeVersion *string, names *[]string) kubeOptionsDataModel {
+	// A framework set rejects duplicates.
+	unique := slices.Compact(slices.Sorted(slices.Values(valueOrZero(names))))
+
 	return kubeOptionsDataModel{
 		KubeVersion: valueOrZero(kubeVersion),
 		// A nil slice would be a null set.
-		Names: append([]string{}, valueOrZero(names)...),
+		Names: append([]string{}, unique...),
 	}
 }
 
@@ -85,13 +88,9 @@ func (d *kubeOptionsDataSource) Schema(_ context.Context, _ datasource.SchemaReq
 		MarkdownDescription: "Provides a list of available " + d.title + ". " +
 			"For more information about " + d.title + " in Managed Kubernetes, see the [official Selectel documentation](" + d.docsURL + ").",
 		Attributes: map[string]schema.Attribute{
-			"id":   schema.StringAttribute{Computed: true, Description: "Pool of the " + d.title + "."},
-			"pool": dataSourceDocs.Region(),
-			"project_id": dataSourceDocs.String(schema.StringAttribute{
-				Optional:   true,
-				Computed:   true,
-				Validators: []validator.String{schemadoc.LengthAtLeast(1)},
-			}, projectIDField),
+			"id":         schema.StringAttribute{Computed: true, Description: "Pool of the " + d.title + "."},
+			"pool":       dataSourceDocs.Region(),
+			"project_id": dataSourceProjectID,
 			"kube_version": dataSourceDocs.String(schema.StringAttribute{
 				Optional: true,
 				Validators: []validator.String{
@@ -161,8 +160,6 @@ func (d *kubeOptionsDataSource) Read(ctx context.Context, req datasource.ReadReq
 	}
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), pool)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pool"), pool)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"), projectID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("kube_version"), kubeVersion)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(d.attribute), options)...)
 }

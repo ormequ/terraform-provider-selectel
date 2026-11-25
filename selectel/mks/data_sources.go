@@ -2,10 +2,11 @@ package mks
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/schemadoc"
 )
 
@@ -21,15 +22,15 @@ const (
 
 var dataSourceDocs = schemadoc.DataSource{Name: "cluster", Location: "managed-kubernetes"}
 
-// dataConnection provides the identical configuration boundary to the data
-// sources; each keeps its own schema, model and state write.
+var dataSourceProjectID = dataSourceDocs.String(schema.StringAttribute{
+	Optional:   true,
+	Computed:   true,
+	Validators: []validator.String{schemadoc.LengthAtLeast(1)},
+}, projectIDField)
+
+// dataConnection provides the configuration boundary to the data sources.
 type dataConnection struct{ connection }
 
 func (d *dataConnection) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	resp.Diagnostics.Append(d.configure(req.ProviderData)...)
-}
-
-// errGettingObjects repeats the error text of package selectel, as errGettingObject does.
-func errGettingObjects(object string, err error) error {
-	return fmt.Errorf("error getting %s: %s", object, err)
 }

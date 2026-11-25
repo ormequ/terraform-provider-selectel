@@ -114,6 +114,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			{KubeVersionMinor: new("1.30"), Names: &[]string{"TopologyManager"}},
 			{KubeVersionMinor: new("1.31"), Names: &[]string{"SidecarContainers", "TopologyManager"}},
 			{KubeVersionMinor: new("1.32")},
+			{KubeVersionMinor: new("1.33"), Names: &[]string{"TopologyManager", "SidecarContainers", "TopologyManager"}},
 		}})
 	})
 	f.handle(mux, routeAdmissionControllers, func(w http.ResponseWriter, _ *http.Request) {
@@ -121,6 +122,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			{KubeVersionMinor: new("1.30"), Names: &[]string{"NodeRestriction"}},
 			{KubeVersionMinor: new("1.31"), Names: &[]string{"AlwaysPullImages", "NodeRestriction"}},
 			{KubeVersionMinor: new("1.32")},
+			{KubeVersionMinor: new("1.33"), Names: &[]string{"NodeRestriction", "AlwaysPullImages", "NodeRestriction"}},
 		}})
 	})
 	f.server = httptest.NewServer(mux)

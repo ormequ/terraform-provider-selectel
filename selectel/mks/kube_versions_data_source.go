@@ -5,10 +5,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/selectel/mks-go/v2/pkg/kubeversion"
-	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/schemadoc"
 )
 
 type kubeVersionsDataSource struct{ dataConnection }
@@ -33,13 +31,9 @@ func (d *kubeVersionsDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 		MarkdownDescription: "Provides a list of supported Kubernetes versions for a Managed Kubernetes cluster. " +
 			"For more information about Managed Kubernetes, see the [official Selectel documentation](https://docs.selectel.ru/en/managed-kubernetes/about/about-managed-kubernetes/).",
 		Attributes: map[string]schema.Attribute{
-			"id":   schema.StringAttribute{Computed: true, Description: "Pool of the Kubernetes versions."},
-			"pool": dataSourceDocs.Region(),
-			"project_id": dataSourceDocs.String(schema.StringAttribute{
-				Optional:   true,
-				Computed:   true,
-				Validators: []validator.String{schemadoc.LengthAtLeast(1)},
-			}, projectIDField),
+			"id":              schema.StringAttribute{Computed: true, Description: "Pool of the Kubernetes versions."},
+			"pool":            dataSourceDocs.Region(),
+			"project_id":      dataSourceProjectID,
 			"latest_version":  schema.StringAttribute{Computed: true, Description: "The most recent version."},
 			"default_version": schema.StringAttribute{Computed: true, Description: "Kubernetes version used by default."},
 			"versions": schema.ListAttribute{

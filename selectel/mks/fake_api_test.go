@@ -552,13 +552,6 @@ func (f *fakeAPI) createNodegroups(w http.ResponseWriter, r *http.Request) {
 			AffinityPolicy: cloud.AffinityPolicy,
 		}
 		disk, ok := f.flavorDisks[cloud.FlavorId]
-		if ok && (cloud.VolumeGb != 0 || cloud.VolumeType != "") {
-			var rejected mksclient.GenericError
-			rejected.Error.Message = "volume is already defined by flavor"
-			writeJSON(w, http.StatusBadRequest, rejected)
-
-			return
-		}
 		if ok {
 			config.VolumeGb, config.LocalVolume = disk, true
 		}

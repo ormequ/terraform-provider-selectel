@@ -195,18 +195,13 @@ func assertErrorContains(t *testing.T, diags diag.Diagnostics, parts ...string) 
 
 const testNodegroupID = testClusterID + "/nodegroup-1"
 
-func (f *fakeAPI) nodegroupResource() *nodegroupResource {
-	config := &testProviderConfig{client: f.client(), project: testProject, pool: "ru-1"}
-
-	return &nodegroupResource{connection: connection{config: config}, pollInterval: time.Millisecond}
-}
-
 func fakeNodegroupResource(t *testing.T) (*fakeAPI, *nodegroupResource) {
 	t.Helper()
 	fake := newFakeAPI(t)
 	fake.seedCluster(testClusterID)
+	config := &testProviderConfig{client: fake.client(), project: testProject, pool: "ru-1"}
 
-	return fake, fake.nodegroupResource()
+	return fake, &nodegroupResource{connection: connection{config: config}, pollInterval: time.Millisecond}
 }
 
 func cloudConfigObject(overrides map[string]attr.Value) types.Object {

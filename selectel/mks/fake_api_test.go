@@ -30,6 +30,7 @@ type fakeAPI struct {
 	clusters        map[string]mksclient.ClusterDetailed
 	nodegroups      map[string]mksclient.NodegroupDetailed
 	afterCreate     func()
+	createGate      *fakeGate
 	flavorDisks     map[string]int64
 	kubeVersions    []mksclient.KubeVersionInfo
 	failures        map[string]int
@@ -52,6 +53,13 @@ type fakeBody struct {
 type fakeFailure struct {
 	status int
 	left   int
+}
+
+// fakeGate holds each node group create before the fake serialises requests:
+// the create signals arrived and waits for release.
+type fakeGate struct {
+	arrived chan struct{}
+	release chan struct{}
 }
 
 type fakeSettle struct {
@@ -138,6 +146,10 @@ func (f *fakeAPI) client() *mksv2.ServiceClient {
 
 func (f *fakeAPI) handle(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		if pattern == routeCreateNodegroup && f.createGate != nil {
+			f.createGate.arrived <- struct{}{}
+			<-f.createGate.release
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 
@@ -540,8 +552,15 @@ func (f *fakeAPI) createNodegroups(w http.ResponseWriter, r *http.Request) {
 			AffinityPolicy: cloud.AffinityPolicy,
 		}
 		disk, ok := f.flavorDisks[cloud.FlavorId]
+		if ok && (cloud.VolumeGb != 0 || cloud.VolumeType != "") {
+			var rejected mksclient.GenericError
+			rejected.Error.Message = "volume is already defined by flavor"
+			writeJSON(w, http.StatusBadRequest, rejected)
+
+			return
+		}
 		if ok {
-			config.VolumeGb, config.LocalVolume, config.VolumeType = disk, true, ""
+			config.VolumeGb, config.LocalVolume = disk, true
 		}
 		ng := mksclient.NodegroupDetailed{
 			Id:                        fmt.Sprintf("nodegroup-%d", len(f.nodegroups)+1),

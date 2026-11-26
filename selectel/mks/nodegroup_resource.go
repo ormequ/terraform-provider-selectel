@@ -191,8 +191,8 @@ func (r *nodegroupResource) Update(ctx context.Context, req resource.UpdateReque
 			return nodegroup.Patch(ctx, client, clusterID, nodegroupID, patch)
 		})
 	}
-	// A resize to the current count is an API error, and under autoscaling the autoscaler owns the count.
-	if err == nil && !plan.NodesCount.Equal(state.NodesCount) && !plan.EnableAutoscale.ValueBool() {
+	// A resize to the current count is an API error.
+	if err == nil && !plan.NodesCount.Equal(state.NodesCount) {
 		err = nodegroupCallAndWait(ctx, client, clusterID, nodegroupID, r.pollInterval, func() error {
 			return nodegroup.Resize(ctx, client, clusterID, nodegroupID, plan.NodesCount.ValueInt64())
 		})

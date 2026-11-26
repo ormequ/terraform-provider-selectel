@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -151,38 +152,48 @@ func TestCreatedNodegroupID(t *testing.T) {
 	}
 }
 
-func TestNodegroupCreateAmongConcurrentCreates(t *testing.T) {
-	t.Run("a node group created elsewhere with another segment is skipped", func(t *testing.T) {
-		fake, r := fakeNodegroupResource(t)
-		fake.afterCreate = func() {
-			fake.nodegroups["nodegroup-2"] = mksclient.NodegroupDetailed{Id: "nodegroup-2", ClusterId: testClusterID, Segment: "ru-7b"}
+func TestNodegroupCreateFailedListAfterTheCreateAdvisesImport(t *testing.T) {
+	fake, r := fakeNodegroupResource(t)
+	fake.afterCreate = func() { fake.failNext[routeNodegroups] = fakeFailure{status: http.StatusForbidden, left: 1} }
+
+	state, diags := createNodegroup(t, r, nodegroupPlan())
+	assertErrorContains(t, diags, "Error creating node group", "the node group was created, but listing the node groups of cluster",
+		"import it as <cluster_id>/<nodegroup_id>")
+	assert.True(t, state.Raw.IsNull())
+}
+
+func TestNodegroupCreatesOfOneClusterTakeTurns(t *testing.T) {
+	fake, r := fakeNodegroupResource(t)
+	gate := &fakeGate{arrived: make(chan struct{}, 2), release: make(chan struct{})}
+	fake.createGate = gate
+	results := make(chan diag.Diagnostics, 2)
+	create := func(segment string) {
+		plan := nodegroupPlan()
+		plan.Segment = types.StringValue(segment)
+		_, diags := createNodegroup(t, r, plan)
+		results <- diags
+	}
+
+	go create("ru-7a")
+	select {
+	case <-gate.arrived:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the first create never reached the API")
+	}
+	go create("ru-7b")
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 1, fake.callCount(routeNodegroups))
+
+	close(gate.release)
+	for range 2 {
+		select {
+		case diags := <-results:
+			assert.False(t, diags.HasError(), "%v", diags)
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "a create did not finish")
 		}
-
-		got := mustCreateNodegroup(t, r, nodegroupPlan())
-		assert.Equal(t, types.StringValue(testNodegroupID), got.ID)
-	})
-	t.Run("a twin created elsewhere fails the create and advises import", func(t *testing.T) {
-		fake, r := fakeNodegroupResource(t)
-		fake.afterCreate = func() {
-			fake.nodegroups["nodegroup-2"] = mksclient.NodegroupDetailed{
-				Id: "nodegroup-2", ClusterId: testClusterID, Segment: "ru-7a",
-				CloudNodegroupConfig: &mksclient.CloudNodegroupConfigInfo{FlavorId: "flavor-1"},
-			}
-		}
-
-		state, diags := createNodegroup(t, r, nodegroupPlan())
-		assertErrorContains(t, diags, "Error creating node group", "2 of the new node groups [nodegroup-1 nodegroup-2]", "import the right one")
-		assert.True(t, state.Raw.IsNull())
-	})
-	t.Run("a failed list after the create advises import", func(t *testing.T) {
-		fake, r := fakeNodegroupResource(t)
-		fake.afterCreate = func() { fake.failNext[routeNodegroups] = fakeFailure{status: http.StatusForbidden, left: 1} }
-
-		state, diags := createNodegroup(t, r, nodegroupPlan())
-		assertErrorContains(t, diags, "Error creating node group", "the node group was created, but listing the node groups of cluster",
-			"import it as <cluster_id>/<nodegroup_id>")
-		assert.True(t, state.Raw.IsNull())
-	})
+	}
+	assert.Len(t, fake.nodegroups, 2)
 }
 
 func TestNodegroupCreateKeepsTheNodegroupWhenTheWaitFails(t *testing.T) {
@@ -212,15 +223,26 @@ func TestNodegroupCreateKeepsTheNodegroupWhenTheWaitFails(t *testing.T) {
 }
 
 func TestNodegroupFlavorWithALocalDisk(t *testing.T) {
-	t.Run("a configured volume replaced by the flavor fails after the node group is saved", func(t *testing.T) {
+	t.Run("a configured network volume replaced by the flavor fails after the node group is saved", func(t *testing.T) {
 		fake, r := fakeNodegroupResource(t)
 		fake.flavorDisks["flavor-1"] = 100
 
-		state, diags := createNodegroup(t, r, nodegroupPlan())
+		plan := nodegroupPlan()
+		plan.CloudNodegroupConfig = cloudConfigObject(map[string]attr.Value{
+			"volume_gb": types.Int64Unknown(), "volume_type": types.StringUnknown(),
+		})
+		state, diags := createNodegroup(t, r, plan)
 		assertErrorContains(t, diags, "Volume replaced by the flavor",
-			"Flavor flavor-1 has a local disk, so the node group got local_volume = true instead of false and volume_gb = 100 instead of 32")
+			"Flavor flavor-1 has a local disk, so the node group got local_volume = true instead of false")
 		got := readNodegroupModel(t, state)
 		assert.Equal(t, types.StringValue(testNodegroupID), got.ID)
+	})
+	t.Run("a configured volume size is refused by the API", func(t *testing.T) {
+		fake, r := fakeNodegroupResource(t)
+		fake.flavorDisks["flavor-1"] = 100
+
+		_, diags := createNodegroup(t, r, nodegroupPlan())
+		assertErrorContains(t, diags, "Error creating node group", "volume is already defined by flavor")
 	})
 	t.Run("an omitted volume takes the flavor values", func(t *testing.T) {
 		fake, r := fakeNodegroupResource(t)
@@ -259,11 +281,6 @@ func TestNodegroupUpdate(t *testing.T) {
 		{name: "the autoscale fields go together", mutate: func(m *nodegroupModel) {
 			m.EnableAutoscale, m.AutoscaleMinNodes, m.AutoscaleMaxNodes = types.BoolValue(true), types.Int64Value(1), types.Int64Value(4)
 		}, wantPatch: map[string]any{"enable_autoscale": true, "autoscale_min_nodes": float64(1), "autoscale_max_nodes": float64(4)}},
-		{name: "a count changed under autoscaling is not sent", prior: func(m *nodegroupModel) {
-			m.EnableAutoscale, m.AutoscaleMinNodes, m.AutoscaleMaxNodes = types.BoolValue(true), types.Int64Value(1), types.Int64Value(4)
-		}, mutate: func(m *nodegroupModel) {
-			m.NodesCount = types.Int64Value(3)
-		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fake, r := fakeNodegroupResource(t)
@@ -340,6 +357,21 @@ func TestNodegroupRead(t *testing.T) {
 		assert.Equal(t, types.Int64Value(4), got.NodesCount)
 		assert.Equal(t, labelsMap(nil), got.Labels)
 		assert.Equal(t, taintsList(), got.Taints)
+	})
+	t.Run("autoscale limits come from the API while autoscaling is on", func(t *testing.T) {
+		fake, r := fakeNodegroupResource(t)
+		plan := nodegroupPlan()
+		plan.EnableAutoscale, plan.AutoscaleMinNodes, plan.AutoscaleMaxNodes = types.BoolValue(true), types.Int64Value(1), types.Int64Value(4)
+		prior := mustCreateNodegroup(t, r, plan)
+		fake.updateNodegroup("nodegroup-1", func(ng *mksclient.NodegroupDetailed) {
+			ng.AutoscaleMinNodes, ng.AutoscaleMaxNodes = new(int64(2)), new(int64(6))
+		})
+
+		state, diags := readNodegroup(t, r, prior)
+		require.False(t, diags.HasError(), "%v", diags)
+		got := readNodegroupModel(t, state)
+		assert.Equal(t, types.Int64Value(2), got.AutoscaleMinNodes)
+		assert.Equal(t, types.Int64Value(6), got.AutoscaleMaxNodes)
 	})
 	t.Run("autoscale limits the API answers as 0 while off keep the state", func(t *testing.T) {
 		_, r := fakeNodegroupResource(t)

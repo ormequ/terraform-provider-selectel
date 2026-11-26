@@ -70,9 +70,9 @@ Describer'ы пишут текст в `MarkdownDescription`. Для атрибу
 | `LengthAtMost`, `LengthAtLeast`, `Between`, `AtLeast` | лимит |
 | `OneOf` | допустимые значения |
 | `UUID`, `Trimmed`, `NonEmptyTrimmed` | формат |
-| `ConflictsWith`, `ExactlyOneOf`, `AlsoRequires` | зависимость; подходят для атрибута любого вида |
+| `ConflictsWith`, `ExactlyOneOf`, `AlsoRequires` | зависимость; подходят для атрибута любого вида, вложенный атрибут называется путём через точку: `cloud_nodegroup_config.cpus` |
 | `StaticString`, `StaticBool`, `StaticInt64` | default |
-| `RequiresReplace`, `BoolRequiresReplace` | «Changing this creates a new …» |
+| `RequiresReplace`, `BoolRequiresReplace`, `Int64RequiresReplace` | «Changing this creates a new …» |
 | `RequiresReplaceIf` | исключение отдельным предложением и «Changing this creates a new …» последним |
 
 `UseStateForUnknown` ничего не меняет для пользователя и используется как есть.

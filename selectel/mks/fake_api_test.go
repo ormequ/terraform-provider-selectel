@@ -29,7 +29,7 @@ type fakeAPI struct {
 
 	clusters        map[string]mksclient.ClusterDetailed
 	nodegroups      map[string]mksclient.NodegroupDetailed
-	createdAlso     []mksclient.NodegroupDetailed
+	afterCreate     func()
 	flavorDisks     map[string]int64
 	kubeVersions    []mksclient.KubeVersionInfo
 	failures        map[string]int
@@ -563,12 +563,9 @@ func (f *fakeAPI) createNodegroups(w http.ResponseWriter, r *http.Request) {
 		f.nodegroups[ng.Id] = ng
 		f.addNodegroupTask(clusterID, ng.Id, "CREATE_NODEGROUP", f.activateNodegroup(ng.Id))
 	}
-	for _, ng := range f.createdAlso {
-		ng.Id = fmt.Sprintf("nodegroup-%d", len(f.nodegroups)+1)
-		ng.ClusterId = clusterID
-		f.nodegroups[ng.Id] = ng
+	if f.afterCreate != nil {
+		f.afterCreate()
 	}
-	f.createdAlso = nil
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -671,13 +668,6 @@ func (f *fakeAPI) deleteNodegroup(w http.ResponseWriter, r *http.Request) {
 	f.nodegroups[id] = ng
 	f.addNodegroupTask(clusterID, id, "DELETE_NODEGROUP", func() { delete(f.nodegroups, id) })
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (f *fakeAPI) seedNodegroup(ng mksclient.NodegroupDetailed) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.nodegroups[ng.Id] = ng
 }
 
 func (f *fakeAPI) nodegroup(id string) mksclient.NodegroupDetailed {

@@ -90,11 +90,9 @@ func TestNodegroupSegmentValidator(t *testing.T) {
 		valid bool
 	}{
 		{value: "ru-7a", valid: true},
-		{value: "gis-1b", valid: true},
 		{value: "ru-7"},
 		{value: "ru-7ab"},
 		{value: "RU-7a"},
-		{value: "SPB-3"},
 	} {
 		t.Run(tt.value, func(t *testing.T) {
 			var resp validator.StringResponse

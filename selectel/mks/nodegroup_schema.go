@@ -234,7 +234,7 @@ func (r *nodegroupResource) Schema(ctx context.Context, _ resource.SchemaRequest
 					}, schemadoc.Field{
 						Definition: "Size of the volume of each node in GB.",
 						Behavior: "A flavor with a local disk defines the size, so omit this argument with such a flavor: " +
-							"a different value fails the apply after the node group is created.",
+							"the API refuses a nonzero value and creates nothing, and `0` fails the apply after the node group is created.",
 					}),
 					"volume_type": nodegroupDocs.String(replacedString(), schemadoc.Field{
 						Definition: "Type of the network volume of each node in the `<type>.<segment>` format, for example, `fast.ru-7a`.",

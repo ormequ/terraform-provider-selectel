@@ -86,7 +86,7 @@ func expandNodegroupCreateOpts(ctx context.Context, plan nodegroupModel) (mkscli
 		Preemptible:               plan.Preemptible.ValueBool(),
 		UserData:                  plan.UserData.ValueString(),
 	}
-	if plan.NodesCount.IsNull() || plan.NodesCount.IsUnknown() {
+	if plan.NodesCount.IsUnknown() {
 		// Only with autoscaling, see ValidateConfig.
 		opts.Count = plan.AutoscaleMinNodes.ValueInt64()
 	}
@@ -202,13 +202,13 @@ func (m *nodegroupModel) fromAPI(ctx context.Context, ng *mksclient.NodegroupDet
 	m.ID = types.StringValue(ng.ClusterId + "/" + ng.Id)
 	m.ClusterID = types.StringValue(ng.ClusterId)
 	m.Segment = types.StringValue(ng.Segment)
-	if !applied || prior.NodesCount.IsNull() || prior.NodesCount.IsUnknown() {
+	if !applied || prior.NodesCount.IsUnknown() {
 		// After an apply the state keeps the planned count: the autoscaler can move the nodes at any time.
 		m.NodesCount = types.Int64Value(int64(len(ng.Nodes)))
 	}
 	m.EnableAutoscale = types.BoolValue(ng.EnableAutoscale)
-	m.AutoscaleMinNodes = knownInt64OrNull(prior.AutoscaleMinNodes)
-	m.AutoscaleMaxNodes = knownInt64OrNull(prior.AutoscaleMaxNodes)
+	m.AutoscaleMinNodes = prior.AutoscaleMinNodes
+	m.AutoscaleMaxNodes = prior.AutoscaleMaxNodes
 	if ng.EnableAutoscale {
 		// The API answers 0 for both while autoscaling is off.
 		m.AutoscaleMinNodes = types.Int64PointerValue(ng.AutoscaleMinNodes)
@@ -225,7 +225,7 @@ func (m *nodegroupModel) fromAPI(ctx context.Context, ng *mksclient.NodegroupDet
 	if len(ng.Labels) > 0 {
 		m.Labels, d = types.MapValueFrom(ctx, types.StringType, ng.Labels)
 		diags.Append(d...)
-	} else if !prior.Labels.IsNull() && !prior.Labels.IsUnknown() && len(prior.Labels.Elements()) == 0 {
+	} else if !prior.Labels.IsNull() && len(prior.Labels.Elements()) == 0 {
 		// A configured empty map stays, so the state matches the configuration.
 		m.Labels = prior.Labels
 	}
@@ -243,7 +243,7 @@ func (m *nodegroupModel) fromAPI(ctx context.Context, ng *mksclient.NodegroupDet
 		}
 		m.Taints, d = types.ListValueFrom(ctx, taintType, taints)
 		diags.Append(d...)
-	} else if !prior.Taints.IsNull() && !prior.Taints.IsUnknown() && len(prior.Taints.Elements()) == 0 {
+	} else if !prior.Taints.IsNull() && len(prior.Taints.Elements()) == 0 {
 		m.Taints = prior.Taints
 	}
 
@@ -262,18 +262,18 @@ func (m *nodegroupModel) fromAPI(ctx context.Context, ng *mksclient.NodegroupDet
 		return diags
 	}
 	var priorCloud nodegroupCloudConfigModel
-	if !prior.CloudNodegroupConfig.IsNull() && !prior.CloudNodegroupConfig.IsUnknown() {
+	if !prior.CloudNodegroupConfig.IsNull() {
 		diags.Append(prior.CloudNodegroupConfig.As(ctx, &priorCloud, basetypes.ObjectAsOptions{UnhandledUnknownAsEmpty: true})...)
 	}
 	// The API never returns cpus, ram_mb, and affinity_policy, so they come from prior.
 	m.CloudNodegroupConfig, d = types.ObjectValueFrom(ctx, nodegroupCloudConfigAttrTypes, nodegroupCloudConfigModel{
 		FlavorID:       types.StringValue(ng.CloudNodegroupConfig.FlavorId),
-		CPUs:           knownInt64OrNull(priorCloud.CPUs),
-		RAMMB:          knownInt64OrNull(priorCloud.RAMMB),
+		CPUs:           priorCloud.CPUs,
+		RAMMB:          priorCloud.RAMMB,
 		VolumeGB:       types.Int64Value(ng.CloudNodegroupConfig.VolumeGb),
 		VolumeType:     types.StringValue(ng.CloudNodegroupConfig.VolumeType),
 		LocalVolume:    types.BoolValue(ng.CloudNodegroupConfig.LocalVolume),
-		AffinityPolicy: knownStringOrNull(priorCloud.AffinityPolicy),
+		AffinityPolicy: priorCloud.AffinityPolicy,
 	})
 	diags.Append(d...)
 
@@ -290,10 +290,10 @@ func checkFlavorVolume(ctx context.Context, planned types.Object, got *mksclient
 	}
 
 	var replaced []string
-	if !cloud.LocalVolume.IsNull() && !cloud.LocalVolume.IsUnknown() && cloud.LocalVolume.ValueBool() != got.LocalVolume {
+	if !cloud.LocalVolume.IsUnknown() && cloud.LocalVolume.ValueBool() != got.LocalVolume {
 		replaced = append(replaced, fmt.Sprintf("local_volume = %t instead of %t", got.LocalVolume, cloud.LocalVolume.ValueBool()))
 	}
-	if !cloud.VolumeGB.IsNull() && !cloud.VolumeGB.IsUnknown() && cloud.VolumeGB.ValueInt64() != got.VolumeGb {
+	if !cloud.VolumeGB.IsUnknown() && cloud.VolumeGB.ValueInt64() != got.VolumeGb {
 		replaced = append(replaced, fmt.Sprintf("volume_gb = %d instead of %d", got.VolumeGb, cloud.VolumeGB.ValueInt64()))
 	}
 	if len(replaced) > 0 {
@@ -304,20 +304,4 @@ func checkFlavorVolume(ctx context.Context, planned types.Object, got *mksclient
 	}
 
 	return diags
-}
-
-func knownStringOrNull(v types.String) types.String {
-	if v.IsUnknown() {
-		return types.StringNull()
-	}
-
-	return v
-}
-
-func knownInt64OrNull(v types.Int64) types.Int64 {
-	if v.IsUnknown() {
-		return types.Int64Null()
-	}
-
-	return v
 }

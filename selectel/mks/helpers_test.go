@@ -195,15 +195,6 @@ func assertErrorContains(t *testing.T, diags diag.Diagnostics, parts ...string) 
 
 const testNodegroupID = testClusterID + "/nodegroup-1"
 
-func fakeNodegroupResource(t *testing.T) (*fakeAPI, *nodegroupResource) {
-	t.Helper()
-	fake := newFakeAPI(t)
-	fake.seedCluster(testClusterID)
-	config := &testProviderConfig{client: fake.client(), project: testProject, pool: "ru-1"}
-
-	return fake, &nodegroupResource{connection: connection{config: config}, pollInterval: time.Millisecond}
-}
-
 func cloudConfigObject(overrides map[string]attr.Value) types.Object {
 	values := map[string]attr.Value{
 		"flavor_id":       types.StringValue("flavor-1"),
@@ -300,14 +291,6 @@ func createNodegroup(t *testing.T, r *nodegroupResource, plan nodegroupModel) (t
 	r.Create(context.Background(), resource.CreateRequest{Plan: tfsdk.Plan(nodegroupStateOf(t, r, plan))}, &resp)
 
 	return resp.State, resp.Diagnostics
-}
-
-func mustCreateNodegroup(t *testing.T, r *nodegroupResource, plan nodegroupModel) nodegroupModel {
-	t.Helper()
-	state, diags := createNodegroup(t, r, plan)
-	require.False(t, diags.HasError(), "%v", diags)
-
-	return readNodegroupModel(t, state)
 }
 
 func readNodegroup(t *testing.T, r *nodegroupResource, prior nodegroupModel) (tfsdk.State, diag.Diagnostics) {

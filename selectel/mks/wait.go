@@ -207,10 +207,10 @@ func waitTaskError(t *mksclient.Task) error {
 	return errors.New(msg)
 }
 
-// callAndWait runs a mutating call on the cluster, waits for the cluster
-// tasks it created and for the cluster to become ACTIVE.
-func callAndWait(ctx context.Context, client *mksv2.ServiceClient, clusterID string, interval time.Duration, call func() error) error {
-	waiter, err := newTaskWaiter(ctx, client, clusterID, "", interval)
+// callAndWaitTasks runs a mutating call and waits for all the tasks of the cluster, or of the node group
+// nodegroupID, that it created: labels and taints of a node group, for one, are two tasks.
+func callAndWaitTasks(ctx context.Context, client *mksv2.ServiceClient, clusterID, nodegroupID string, interval time.Duration, call func() error) error {
+	waiter, err := newTaskWaiter(ctx, client, clusterID, nodegroupID, interval)
 	if err != nil {
 		return err
 	}
@@ -220,7 +220,13 @@ func callAndWait(ctx context.Context, client *mksv2.ServiceClient, clusterID str
 		return err
 	}
 
-	err = waiter.Wait(ctx)
+	return waiter.Wait(ctx)
+}
+
+// callAndWait runs a mutating call on the cluster, waits for the cluster
+// tasks it created and for the cluster to become ACTIVE.
+func callAndWait(ctx context.Context, client *mksv2.ServiceClient, clusterID string, interval time.Duration, call func() error) error {
+	err := callAndWaitTasks(ctx, client, clusterID, "", interval, call)
 	if err != nil {
 		return err
 	}

@@ -10,7 +10,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	mksv2 "github.com/selectel/mks-go/v2/pkg"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
 	"github.com/selectel/mks-go/v2/pkg/nodegroup"
 	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/mutexkv"
@@ -187,13 +186,13 @@ func (r *nodegroupResource) Update(ctx context.Context, req resource.UpdateReque
 	clusterID, nodegroupID := state.ClusterID.ValueString(), state.nodegroupID()
 	var err error
 	if changed {
-		err = nodegroupCallAndWait(ctx, client, clusterID, nodegroupID, r.pollInterval, func() error {
+		err = callAndWaitTasks(ctx, client, clusterID, nodegroupID, r.pollInterval, func() error {
 			return nodegroup.Patch(ctx, client, clusterID, nodegroupID, patch)
 		})
 	}
 	// A resize to the current count is an API error.
 	if err == nil && !plan.NodesCount.Equal(state.NodesCount) {
-		err = nodegroupCallAndWait(ctx, client, clusterID, nodegroupID, r.pollInterval, func() error {
+		err = callAndWaitTasks(ctx, client, clusterID, nodegroupID, r.pollInterval, func() error {
 			return nodegroup.Resize(ctx, client, clusterID, nodegroupID, plan.NodesCount.ValueInt64())
 		})
 	}
@@ -232,7 +231,7 @@ func (r *nodegroupResource) Delete(ctx context.Context, req resource.DeleteReque
 	defer cancel()
 
 	clusterID, nodegroupID := state.ClusterID.ValueString(), state.nodegroupID()
-	err := nodegroupCallAndWait(ctx, client, clusterID, nodegroupID, r.pollInterval, func() error {
+	err := callAndWaitTasks(ctx, client, clusterID, nodegroupID, r.pollInterval, func() error {
 		return nodegroup.Delete(ctx, client, clusterID, nodegroupID)
 	})
 	if err == nil {
@@ -269,20 +268,4 @@ func (r *nodegroupResource) ImportState(ctx context.Context, req resource.Import
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("cluster_id"), clusterID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("project_id"), projectID)...)
-}
-
-// nodegroupCallAndWait runs a mutating call on the node group and waits for all
-// the node group tasks it created: labels and taints, for one, are two tasks.
-func nodegroupCallAndWait(ctx context.Context, client *mksv2.ServiceClient, clusterID, nodegroupID string, interval time.Duration, call func() error) error {
-	waiter, err := newTaskWaiter(ctx, client, clusterID, nodegroupID, interval)
-	if err != nil {
-		return err
-	}
-
-	err = call()
-	if err != nil {
-		return err
-	}
-
-	return waiter.Wait(ctx)
 }

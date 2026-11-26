@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/selectel/mks-go/v2/pkg/mksclient"
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,23 @@ func taintsList(effects ...string) types.List {
 	}
 
 	return types.ListValueMust(types.ObjectType{AttrTypes: nodegroupTaintAttrTypes}, taints)
+}
+
+func fakeNodegroupResource(t *testing.T) (*fakeAPI, *nodegroupResource) {
+	t.Helper()
+	fake := newFakeAPI(t)
+	fake.seedCluster(testClusterID)
+	config := &testProviderConfig{client: fake.client(), project: testProject, pool: "ru-1"}
+
+	return fake, &nodegroupResource{connection: connection{config: config}, pollInterval: time.Millisecond}
+}
+
+func mustCreateNodegroup(t *testing.T, r *nodegroupResource, plan nodegroupModel) nodegroupModel {
+	t.Helper()
+	state, diags := createNodegroup(t, r, plan)
+	require.False(t, diags.HasError(), "%v", diags)
+
+	return readNodegroupModel(t, state)
 }
 
 func TestNodegroupCreateSendsFields(t *testing.T) {
@@ -167,20 +185,26 @@ func TestNodegroupCreatesOfOneClusterTakeTurns(t *testing.T) {
 	gate := &fakeGate{arrived: make(chan struct{}, 2), release: make(chan struct{})}
 	fake.createGate = gate
 	results := make(chan diag.Diagnostics, 2)
-	create := func(segment string) {
+	create := func(segment string) func() {
 		plan := nodegroupPlan()
 		plan.Segment = types.StringValue(segment)
-		_, diags := createNodegroup(t, r, plan)
-		results <- diags
-	}
+		req := resource.CreateRequest{Plan: tfsdk.Plan(nodegroupStateOf(t, r, plan))}
+		resp := resource.CreateResponse{State: emptyNodegroupState(t, r)}
 
-	go create("ru-7a")
+		return func() {
+			r.Create(context.Background(), req, &resp)
+			results <- resp.Diagnostics
+		}
+	}
+	first, second := create("ru-7a"), create("ru-7b")
+
+	go first()
 	select {
 	case <-gate.arrived:
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "the first create never reached the API")
 	}
-	go create("ru-7b")
+	go second()
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, 1, fake.callCount(routeNodegroups))
 
@@ -237,12 +261,18 @@ func TestNodegroupFlavorWithALocalDisk(t *testing.T) {
 		got := readNodegroupModel(t, state)
 		assert.Equal(t, types.StringValue(testNodegroupID), got.ID)
 	})
-	t.Run("a configured volume size is refused by the API", func(t *testing.T) {
+	t.Run("a zero volume size replaced by the flavor fails after the node group is saved", func(t *testing.T) {
 		fake, r := fakeNodegroupResource(t)
 		fake.flavorDisks["flavor-1"] = 100
 
-		_, diags := createNodegroup(t, r, nodegroupPlan())
-		assertErrorContains(t, diags, "Error creating node group", "volume is already defined by flavor")
+		plan := nodegroupPlan()
+		plan.CloudNodegroupConfig = cloudConfigObject(map[string]attr.Value{
+			"volume_gb": types.Int64Value(0), "volume_type": types.StringUnknown(), "local_volume": types.BoolUnknown(),
+		})
+		state, diags := createNodegroup(t, r, plan)
+		assertErrorContains(t, diags, "Volume replaced by the flavor", "volume_gb = 100 instead of 0")
+		got := readNodegroupModel(t, state)
+		assert.Equal(t, types.StringValue(testNodegroupID), got.ID)
 	})
 	t.Run("an omitted volume takes the flavor values", func(t *testing.T) {
 		fake, r := fakeNodegroupResource(t)
@@ -324,7 +354,7 @@ func TestNodegroupUpdateFailsOnAnyFailedTask(t *testing.T) {
 	_, diags := updateNodegroup(t, r, prior, plan)
 
 	assertErrorContains(t, diags, "Error updating node group", "task UPDATE_NODEGROUP_TAINTS", "ended in ERROR")
-	assert.Equal(t, mksclient.NodegroupDetailedStatusACTIVE, fake.nodegroup("nodegroup-1").Status)
+	assert.Equal(t, mksclient.NodegroupDetailedStatusACTIVE, fake.nodegroups["nodegroup-1"].Status)
 }
 
 func TestNodegroupRead(t *testing.T) {
@@ -380,8 +410,6 @@ func TestNodegroupRead(t *testing.T) {
 		state, diags := readNodegroup(t, r, prior)
 		require.False(t, diags.HasError(), "%v", diags)
 		got := readNodegroupModel(t, state)
-		assert.True(t, got.AutoscaleMinNodes.IsNull())
-		assert.True(t, got.AutoscaleMaxNodes.IsNull())
 		assert.Equal(t, prior, got)
 	})
 }

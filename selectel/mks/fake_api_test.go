@@ -689,13 +689,6 @@ func (f *fakeAPI) deleteNodegroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (f *fakeAPI) nodegroup(id string) mksclient.NodegroupDetailed {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.nodegroups[id]
-}
-
 func (f *fakeAPI) updateNodegroup(id string, update func(ng *mksclient.NodegroupDetailed)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

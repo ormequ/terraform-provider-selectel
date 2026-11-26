@@ -3,6 +3,7 @@ package schemadoc
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -11,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/defaults"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -62,6 +64,11 @@ type boolReplacement struct {
 	Facts
 }
 
+type int64Replacement struct {
+	planmodifier.Int64
+	Facts
+}
+
 // LengthAtMost counts characters, not UTF-8 bytes.
 func LengthAtMost(length int) validator.String {
 	return stringRule{stringvalidator.UTF8LengthAtMost(length), Facts{
@@ -104,8 +111,8 @@ type Relation struct {
 	Facts
 }
 
-// ConflictsWith rejects the configuration when any of the named root
-// attributes is set together with this one.
+// ConflictsWith rejects the configuration when any of the named attributes is
+// set together with this one. A nested attribute is named by its dotted path.
 func ConflictsWith(attributes ...string) Relation {
 	return Relation{
 		stringvalidator.ConflictsWith(rootPaths(attributes)...).(relationValidator),
@@ -113,9 +120,8 @@ func ConflictsWith(attributes ...string) Relation {
 	}
 }
 
-// ExactlyOneOf requires exactly one of the named root attributes. List the
-// whole group, including the attribute that has the validator, so every
-// member gets the same sentence.
+// ExactlyOneOf requires exactly one of the named attributes, a nested one named by its dotted path.
+// List the whole group, including the attribute that has the validator, so every member gets the same sentence.
 func ExactlyOneOf(attributes ...string) Relation {
 	return Relation{
 		stringvalidator.ExactlyOneOf(rootPaths(attributes)...).(relationValidator),
@@ -124,7 +130,7 @@ func ExactlyOneOf(attributes ...string) Relation {
 }
 
 // AlsoRequires rejects the configuration when this attribute is set without all
-// of the named root attributes.
+// of the named attributes. A nested attribute is named by its dotted path.
 func AlsoRequires(attributes ...string) Relation {
 	return Relation{
 		stringvalidator.AlsoRequires(rootPaths(attributes)...).(relationValidator),
@@ -135,7 +141,11 @@ func AlsoRequires(attributes ...string) Relation {
 func rootPaths(attributes []string) []path.Expression {
 	paths := make([]path.Expression, len(attributes))
 	for i, name := range attributes {
-		paths[i] = path.MatchRoot(name)
+		steps := strings.Split(name, ".")
+		paths[i] = path.MatchRoot(steps[0])
+		for _, step := range steps[1:] {
+			paths[i] = paths[i].AtName(step)
+		}
 	}
 
 	return paths
@@ -205,6 +215,11 @@ func RequiresReplace() planmodifier.String {
 // BoolRequiresReplace has the same behavior as boolplanmodifier.RequiresReplace.
 func BoolRequiresReplace() planmodifier.Bool {
 	return boolReplacement{boolplanmodifier.RequiresReplace(), Facts{ReplacesResource: true}}
+}
+
+// Int64RequiresReplace has the same behavior as int64planmodifier.RequiresReplace.
+func Int64RequiresReplace() planmodifier.Int64 {
+	return int64Replacement{int64planmodifier.RequiresReplace(), Facts{ReplacesResource: true}}
 }
 
 // RequiresReplaceIf has the same behavior as stringplanmodifier.RequiresReplaceIf.

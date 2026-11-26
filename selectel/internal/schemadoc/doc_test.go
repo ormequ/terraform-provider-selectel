@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/defaults"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -193,6 +194,61 @@ func TestBoolRequiresReplace(t *testing.T) {
 		}, &response)
 		require.False(t, response.Diagnostics.HasError())
 		assert.Equal(t, value, response.RequiresReplace)
+	}
+}
+
+func TestInt64RequiresReplace(t *testing.T) {
+	attribute := schemadoc.Resource{Name: "node group"}.Int64(schema.Int64Attribute{
+		Optional:      true,
+		PlanModifiers: []planmodifier.Int64{schemadoc.Int64RequiresReplace()},
+	}, schemadoc.Field{Definition: "Number of vCPUs of each node."})
+	assert.Equal(t, "Number of vCPUs of each node. Changing this creates a new node group.", attribute.MarkdownDescription)
+
+	raw := tftypes.NewValue(tftypes.Object{AttributeTypes: map[string]tftypes.Type{}}, map[string]tftypes.Value{})
+	for _, value := range []int64{2, 4} {
+		var response planmodifier.Int64Response
+		attribute.PlanModifiers[0].PlanModifyInt64(context.Background(), planmodifier.Int64Request{
+			State: tfsdk.State{Raw: raw}, Plan: tfsdk.Plan{Raw: raw},
+			StateValue: types.Int64Value(2), PlanValue: types.Int64Value(value),
+		}, &response)
+		require.False(t, response.Diagnostics.HasError())
+		assert.Equal(t, value != 2, response.RequiresReplace)
+	}
+}
+
+func TestNestedExactlyOneOf(t *testing.T) {
+	docs := schemadoc.Resource{Name: "node group"}
+	flavor := docs.String(schema.StringAttribute{
+		Optional:   true,
+		Validators: []validator.String{schemadoc.ExactlyOneOf("config.flavor_id", "config.cpus")},
+	}, schemadoc.Field{Definition: "Flavor of the nodes."})
+	assert.Equal(t, "Flavor of the nodes. Set exactly one of `config.flavor_id` and `config.cpus`.", flavor.MarkdownDescription)
+
+	s := schema.Schema{Attributes: map[string]schema.Attribute{
+		"config": schema.SingleNestedAttribute{Optional: true, Attributes: map[string]schema.Attribute{
+			"flavor_id": flavor,
+			"cpus":      schema.Int64Attribute{Optional: true},
+		}},
+	}}
+	configType := tftypes.Object{AttributeTypes: map[string]tftypes.Type{"flavor_id": tftypes.String, "cpus": tftypes.Number}}
+	for _, cpus := range []*int64{nil, new(int64(2))} {
+		var cpusValue tftypes.Value
+		if cpus == nil {
+			cpusValue = tftypes.NewValue(tftypes.Number, nil)
+		} else {
+			cpusValue = tftypes.NewValue(tftypes.Number, *cpus)
+		}
+		raw := tftypes.NewValue(tftypes.Object{AttributeTypes: map[string]tftypes.Type{"config": configType}}, map[string]tftypes.Value{
+			"config": tftypes.NewValue(configType, map[string]tftypes.Value{
+				"flavor_id": tftypes.NewValue(tftypes.String, "flavor-1"), "cpus": cpusValue,
+			}),
+		})
+		var response validator.StringResponse
+		flavor.Validators[0].ValidateString(context.Background(), validator.StringRequest{
+			Path: path.Root("config").AtName("flavor_id"), PathExpression: path.MatchRoot("config").AtName("flavor_id"),
+			ConfigValue: types.StringValue("flavor-1"), Config: tfsdk.Config{Schema: s, Raw: raw},
+		}, &response)
+		assert.Equal(t, cpus != nil, response.Diagnostics.HasError(), "%v", response.Diagnostics)
 	}
 }
 

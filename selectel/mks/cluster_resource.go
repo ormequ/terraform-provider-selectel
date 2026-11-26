@@ -78,7 +78,7 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	var got *mksclient.ClusterDetailed
-	waitErr := newCreatedTaskWaiter(client, created.Id, r.pollInterval).Wait(ctx)
+	waitErr := newCreatedTaskWaiter(client, created.Id, "", r.pollInterval).Wait(ctx)
 	if waitErr == nil {
 		got, waitErr = waitActive(ctx, client, created.Id, r.pollInterval)
 	}
@@ -213,7 +213,7 @@ func (r *clusterResource) Delete(ctx context.Context, req resource.DeleteRequest
 	defer cancel()
 
 	clusterID := state.ID.ValueString()
-	waiter, err := newTaskWaiter(ctx, client, clusterID, r.pollInterval)
+	waiter, err := newTaskWaiter(ctx, client, clusterID, "", r.pollInterval)
 	if err == nil {
 		err = cluster.Delete(ctx, client, clusterID)
 	}

@@ -28,6 +28,9 @@ type fakeAPI struct {
 	server *httptest.Server
 
 	clusters        map[string]mksclient.ClusterDetailed
+	nodegroups      map[string]mksclient.NodegroupDetailed
+	createdAlso     []mksclient.NodegroupDetailed
+	flavorDisks     map[string]int64
 	kubeVersions    []mksclient.KubeVersionInfo
 	failures        map[string]int
 	failNext        map[string]fakeFailure
@@ -77,6 +80,13 @@ const (
 	routeUpgradeMinor  = "POST /v2/clusters/{cluster_id}/upgrade-minor-version"
 	routeTasks         = "GET /v2/clusters/{cluster_id}/tasks"
 	routeTask          = "GET /v2/clusters/{cluster_id}/tasks/{task_id}"
+
+	routeNodegroups      = "GET /v2/clusters/{cluster_id}/nodegroups"
+	routeNodegroup       = "GET /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	routeCreateNodegroup = "POST /v2/clusters/{cluster_id}/nodegroups"
+	routePatchNodegroup  = "PATCH /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
+	routeResizeNodegroup = "POST /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}/resize"
+	routeDeleteNodegroup = "DELETE /v2/clusters/{cluster_id}/nodegroups/{nodegroup_id}"
 )
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -90,6 +100,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		failedTaskTypes: map[string]bool{}, stuckTaskTypes: map[string]bool{},
 		settles: map[string]fakeSettle{},
 		queries: map[string]string{}, bodies: map[string][]byte{}, calls: map[string]int{},
+		nodegroups: map[string]mksclient.NodegroupDetailed{}, flavorDisks: map[string]int64{},
 	}
 
 	mux := http.NewServeMux()
@@ -104,6 +115,12 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	f.handle(mux, routeUpgradeMinor, f.upgradeCluster(true))
 	f.handle(mux, routeTasks, f.listTasks)
 	f.handle(mux, routeTask, f.getTask)
+	f.handle(mux, routeNodegroups, f.listNodegroups)
+	f.handle(mux, routeNodegroup, f.getNodegroup)
+	f.handle(mux, routeCreateNodegroup, f.createNodegroups)
+	f.handle(mux, routePatchNodegroup, f.patchNodegroup)
+	f.handle(mux, routeResizeNodegroup, f.resizeNodegroup)
+	f.handle(mux, routeDeleteNodegroup, f.deleteNodegroup)
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 
@@ -429,7 +446,9 @@ func (f *fakeAPI) getTask(w http.ResponseWriter, r *http.Request) {
 		t.task.ErrorDetails = &mksclient.TaskErrorDetails{
 			Code: 42, Name: "fake failure", Details: new("fake details of " + t.task.Type),
 		}
-		f.updateClusterLocked(id, "ERROR")
+		if valueOrZero(t.task.NodegroupId) == "" {
+			f.updateClusterLocked(id, "ERROR")
+		}
 	default:
 		t.task.Status = mksclient.DONE
 		if t.effect != nil {
@@ -451,6 +470,230 @@ func (f *fakeAPI) addTask(clusterID, taskType string, effect func()) {
 		},
 		effect: effect,
 	})
+}
+
+func (f *fakeAPI) addNodegroupTask(clusterID, nodegroupID, taskType string, effect func()) {
+	f.addTask(clusterID, taskType, effect)
+	f.tasks[len(f.tasks)-1].task.NodegroupId = &nodegroupID
+}
+
+func (f *fakeAPI) listNodegroups(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("cluster_id")
+	_, ok := f.clusters[id]
+	if !ok {
+		writeNotFound(w, id)
+
+		return
+	}
+
+	var list []mksclient.NodegroupListItem
+	for _, ng := range f.nodegroups {
+		if ng.ClusterId == id {
+			ng = fakeNodegroupView(ng)
+			list = append(list, mksclient.NodegroupListItem{
+				Id: ng.Id, ClusterId: ng.ClusterId, Segment: ng.Segment, Labels: ng.Labels, Taints: ng.Taints,
+				CloudNodegroupConfig: ng.CloudNodegroupConfig, Nodes: ng.Nodes, EnableAutoscale: ng.EnableAutoscale,
+				AutoscaleMinNodes: ng.AutoscaleMinNodes, AutoscaleMaxNodes: ng.AutoscaleMaxNodes,
+				Status: mksclient.NodegroupListItemStatus(ng.Status),
+			})
+		}
+	}
+	slices.SortFunc(list, func(a, b mksclient.NodegroupListItem) int { return strings.Compare(a.Id, b.Id) })
+	writeJSON(w, http.StatusOK, mksclient.NodegroupList{Nodegroups: list})
+}
+
+func (f *fakeAPI) getNodegroup(w http.ResponseWriter, r *http.Request) {
+	ng, ok := f.nodegroups[r.PathValue("nodegroup_id")]
+	if !ok || ng.ClusterId != r.PathValue("cluster_id") {
+		writeNotFound(w, r.PathValue("nodegroup_id"))
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, mksclient.NodegroupResp{Nodegroup: fakeNodegroupView(ng)})
+}
+
+// fakeNodegroupView answers autoscale limits as 0 while autoscaling is off, the way the API does.
+func fakeNodegroupView(ng mksclient.NodegroupDetailed) mksclient.NodegroupDetailed {
+	if !ng.EnableAutoscale {
+		ng.AutoscaleMinNodes, ng.AutoscaleMaxNodes = new(int64(0)), new(int64(0))
+	}
+
+	return ng
+}
+
+func (f *fakeAPI) createNodegroups(w http.ResponseWriter, r *http.Request) {
+	clusterID := r.PathValue("cluster_id")
+	if f.conflict(w, clusterID, []string{"ACTIVE"}) {
+		return
+	}
+	var body mksclient.NodegroupsCreateBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	for _, opts := range body.Nodegroups {
+		cloud := valueOrZero(opts.CloudNodegroupConfig)
+		config := &mksclient.CloudNodegroupConfigInfo{
+			FlavorId:       cmp.Or(cloud.FlavorId, fmt.Sprintf("fake-flavor-%d-%d", cloud.Cpus, cloud.RamMb)),
+			VolumeGb:       cloud.VolumeGb,
+			VolumeType:     cloud.VolumeType,
+			LocalVolume:    cloud.LocalVolume,
+			AffinityPolicy: cloud.AffinityPolicy,
+		}
+		disk, ok := f.flavorDisks[cloud.FlavorId]
+		if ok {
+			config.VolumeGb, config.LocalVolume, config.VolumeType = disk, true, ""
+		}
+		ng := mksclient.NodegroupDetailed{
+			Id:                        fmt.Sprintf("nodegroup-%d", len(f.nodegroups)+1),
+			ClusterId:                 clusterID,
+			Segment:                   opts.Segment,
+			Labels:                    valueOrZero(opts.Labels),
+			Taints:                    valueOrZero(opts.Taints),
+			EnableAutoscale:           valueOrZero(opts.EnableAutoscale),
+			AutoscaleMinNodes:         opts.AutoscaleMinNodes,
+			AutoscaleMaxNodes:         opts.AutoscaleMaxNodes,
+			UserData:                  opts.UserData,
+			InstallNvidiaDevicePlugin: valueOrZero(opts.InstallNvidiaDevicePlugin),
+			Preemptible:               opts.Preemptible,
+			NodegroupType:             mksclient.NodegroupDetailedNodegroupTypeSTANDARD,
+			CloudNodegroupConfig:      config,
+			Status:                    "PENDING_CREATE",
+		}
+		setFakeNodes(&ng, opts.Count)
+		f.nodegroups[ng.Id] = ng
+		f.addNodegroupTask(clusterID, ng.Id, "CREATE_NODEGROUP", f.activateNodegroup(ng.Id))
+	}
+	for _, ng := range f.createdAlso {
+		ng.Id = fmt.Sprintf("nodegroup-%d", len(f.nodegroups)+1)
+		ng.ClusterId = clusterID
+		f.nodegroups[ng.Id] = ng
+	}
+	f.createdAlso = nil
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func setFakeNodes(ng *mksclient.NodegroupDetailed, count int64) {
+	ng.Nodes = nil
+	for i := range count {
+		ng.Nodes = append(ng.Nodes, mksclient.Node{
+			Id:       fmt.Sprintf("%s-node-%d", ng.Id, i),
+			Ip:       fmt.Sprintf("198.51.100.%d", i+1),
+			Hostname: fmt.Sprintf("%s-%d", ng.Id, i),
+		})
+	}
+}
+
+func (f *fakeAPI) activateNodegroup(id string) func() {
+	return func() {
+		ng, ok := f.nodegroups[id]
+		if ok {
+			ng.Status = "ACTIVE"
+			f.nodegroups[id] = ng
+		}
+	}
+}
+
+func (f *fakeAPI) patchNodegroup(w http.ResponseWriter, r *http.Request) {
+	clusterID, id := r.PathValue("cluster_id"), r.PathValue("nodegroup_id")
+	ng, ok := f.nodegroups[id]
+	if !ok {
+		writeNotFound(w, id)
+
+		return
+	}
+	var body mksclient.NodegroupUpdateBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	opts := body.Nodegroup
+
+	if opts.Labels != nil {
+		ng.Labels = *opts.Labels
+		f.addNodegroupTask(clusterID, id, "UPDATE_NODEGROUP_LABELS", f.activateNodegroup(id))
+	}
+	if opts.Taints != nil {
+		ng.Taints = *opts.Taints
+		f.addNodegroupTask(clusterID, id, "UPDATE_NODEGROUP_TAINTS", f.activateNodegroup(id))
+	}
+	ng.EnableAutoscale = valueOrT(opts.EnableAutoscale, ng.EnableAutoscale)
+	if opts.AutoscaleMinNodes != nil {
+		ng.AutoscaleMinNodes = new(int64(*opts.AutoscaleMinNodes))
+	}
+	if opts.AutoscaleMaxNodes != nil {
+		ng.AutoscaleMaxNodes = new(int64(*opts.AutoscaleMaxNodes))
+	}
+	f.nodegroups[id] = ng
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fakeAPI) resizeNodegroup(w http.ResponseWriter, r *http.Request) {
+	clusterID, id := r.PathValue("cluster_id"), r.PathValue("nodegroup_id")
+	ng, ok := f.nodegroups[id]
+	if !ok {
+		writeNotFound(w, id)
+
+		return
+	}
+	var body mksclient.NodegroupResizeBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Nodegroup.Desired == int64(len(ng.Nodes)) {
+		var rejected mksclient.GenericError
+		rejected.Error.Message = "desired number of nodes is equal to the current one"
+		writeJSON(w, http.StatusBadRequest, rejected)
+
+		return
+	}
+
+	setFakeNodes(&ng, body.Nodegroup.Desired)
+	ng.Status = "PENDING_SCALE_UP"
+	f.nodegroups[id] = ng
+	f.addNodegroupTask(clusterID, id, "RESIZE_NODEGROUP", f.activateNodegroup(id))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fakeAPI) deleteNodegroup(w http.ResponseWriter, r *http.Request) {
+	clusterID, id := r.PathValue("cluster_id"), r.PathValue("nodegroup_id")
+	ng, ok := f.nodegroups[id]
+	if !ok {
+		writeNotFound(w, id)
+
+		return
+	}
+	if ng.Status != "ACTIVE" && ng.Status != "ERROR" {
+		var body mksclient.GenericError
+		body.Error.Message = "nodegroup has invalid status to perform this operation"
+		writeJSON(w, http.StatusConflict, body)
+
+		return
+	}
+
+	ng.Status = "PENDING_DELETE"
+	f.nodegroups[id] = ng
+	f.addNodegroupTask(clusterID, id, "DELETE_NODEGROUP", func() { delete(f.nodegroups, id) })
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fakeAPI) seedNodegroup(ng mksclient.NodegroupDetailed) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.nodegroups[ng.Id] = ng
+}
+
+func (f *fakeAPI) nodegroup(id string) mksclient.NodegroupDetailed {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.nodegroups[id]
+}
+
+func (f *fakeAPI) updateNodegroup(id string, update func(ng *mksclient.NodegroupDetailed)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ng := f.nodegroups[id]
+	update(&ng)
+	f.nodegroups[id] = ng
 }
 
 func (f *fakeAPI) seedCluster(id string) {

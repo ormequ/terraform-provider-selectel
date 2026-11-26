@@ -28,13 +28,13 @@ func (d *kubeVersionsDataSource) Metadata(_ context.Context, req datasource.Meta
 
 func (d *kubeVersionsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Provides a list of supported Kubernetes versions for a Managed Kubernetes cluster. " +
+		MarkdownDescription: "Provides a list of supported Kubernetes versions in Managed Kubernetes. " +
 			"For more information about Managed Kubernetes, see the [official Selectel documentation](https://docs.selectel.ru/en/managed-kubernetes/about/about-managed-kubernetes/).",
 		Attributes: map[string]schema.Attribute{
 			"id":              schema.StringAttribute{Computed: true, Description: "Pool of the Kubernetes versions."},
 			"pool":            dataSourceDocs.Region(),
 			"project_id":      dataSourceProjectID,
-			"latest_version":  schema.StringAttribute{Computed: true, Description: "The most recent version."},
+			"latest_version":  schema.StringAttribute{Computed: true, Description: "Most recent version."},
 			"default_version": schema.StringAttribute{Computed: true, Description: "Kubernetes version used by default."},
 			"versions": schema.ListAttribute{
 				Computed:    true,

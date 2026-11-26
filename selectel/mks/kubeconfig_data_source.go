@@ -39,8 +39,8 @@ func (d *kubeconfigDataSource) Schema(_ context.Context, _ datasource.SchemaRequ
 	}
 
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Provides a kubeconfig file and its fields for a Managed Kubernetes cluster. " +
-			"For more information about Managed Kubernetes, see the [official Selectel documentation](https://docs.selectel.ru/en/managed-kubernetes/).",
+		MarkdownDescription: "Provides a kubeconfig file and its fields in Managed Kubernetes. " +
+			"For more information about connecting to a cluster, see the [official Selectel documentation](https://docs.selectel.ru/en/managed-kubernetes/clusters/connect-to-cluster/).",
 		Attributes: map[string]schema.Attribute{
 			"id": dataSourceDocs.ID(),
 			"cluster_id": dataSourceDocs.String(schema.StringAttribute{

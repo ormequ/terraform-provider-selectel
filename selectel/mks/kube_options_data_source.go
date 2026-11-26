@@ -85,8 +85,8 @@ func (d *kubeOptionsDataSource) Metadata(_ context.Context, req datasource.Metad
 
 func (d *kubeOptionsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Provides a list of available " + d.title + ". " +
-			"For more information about " + d.title + " in Managed Kubernetes, see the [official Selectel documentation](" + d.docsURL + ").",
+		MarkdownDescription: "Provides a list of available " + d.title + " in Managed Kubernetes. " +
+			"For more information about " + d.title + ", see the [official Selectel documentation](" + d.docsURL + ").",
 		Attributes: map[string]schema.Attribute{
 			"id":         schema.StringAttribute{Computed: true, Description: "Pool of the " + d.title + "."},
 			"pool":       dataSourceDocs.Region(),

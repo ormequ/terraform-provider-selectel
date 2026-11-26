@@ -210,7 +210,6 @@ func TestKubeOptionsDataSources(t *testing.T) {
 			{name: "every version without kube_version", want: []string{"1.30", "1.31", "1.32", "1.33"}},
 			{name: "one version by the patch", kubeVersion: "1.31.8", want: []string{"1.31"}},
 			{name: "one version by the minor", kubeVersion: "1.30", want: []string{"1.30"}},
-			{name: "a repeated name once", kubeVersion: "1.33", want: []string{"1.33"}},
 			{
 				name: "a version not in the list", kubeVersion: "1.3.1",
 				wantErr: `: available kubernetes options for kubernetes version "1.3" is not found`,

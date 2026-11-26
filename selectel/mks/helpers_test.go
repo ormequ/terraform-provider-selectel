@@ -22,10 +22,12 @@ type testProviderConfig struct {
 	clientErr     error
 	project, pool string
 	gotProject    []string
+	gotPool       []string
 }
 
-func (c *testProviderConfig) MKSV2Client(_ context.Context, projectID, _ string) (*mksv2.ServiceClient, error) {
+func (c *testProviderConfig) MKSV2Client(_ context.Context, projectID, pool string) (*mksv2.ServiceClient, error) {
 	c.gotProject = append(c.gotProject, projectID)
+	c.gotPool = append(c.gotPool, pool)
 	if c.clientErr != nil {
 		return nil, c.clientErr
 	}

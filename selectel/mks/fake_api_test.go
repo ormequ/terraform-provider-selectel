@@ -29,6 +29,7 @@ type fakeAPI struct {
 
 	clusters        map[string]mksclient.ClusterDetailed
 	kubeVersions    []mksclient.KubeVersionInfo
+	kubeconfig      string
 	failures        map[string]int
 	failNext        map[string]fakeFailure
 	failureBodies   map[string]fakeBody
@@ -68,15 +69,18 @@ const (
 )
 
 const (
-	routeCluster       = "GET /v2/clusters/{cluster_id}"
-	routeKubeVersions  = "GET /v2/kubeversions"
-	routeCreateCluster = "POST /v2/clusters"
-	routePatchCluster  = "PATCH /v2/clusters/{cluster_id}"
-	routeDeleteCluster = "DELETE /v2/clusters/{cluster_id}"
-	routeUpgradePatch  = "POST /v2/clusters/{cluster_id}/upgrade-patch-version"
-	routeUpgradeMinor  = "POST /v2/clusters/{cluster_id}/upgrade-minor-version"
-	routeTasks         = "GET /v2/clusters/{cluster_id}/tasks"
-	routeTask          = "GET /v2/clusters/{cluster_id}/tasks/{task_id}"
+	routeCluster              = "GET /v2/clusters/{cluster_id}"
+	routeKubeVersions         = "GET /v2/kubeversions"
+	routeCreateCluster        = "POST /v2/clusters"
+	routePatchCluster         = "PATCH /v2/clusters/{cluster_id}"
+	routeDeleteCluster        = "DELETE /v2/clusters/{cluster_id}"
+	routeUpgradePatch         = "POST /v2/clusters/{cluster_id}/upgrade-patch-version"
+	routeUpgradeMinor         = "POST /v2/clusters/{cluster_id}/upgrade-minor-version"
+	routeTasks                = "GET /v2/clusters/{cluster_id}/tasks"
+	routeTask                 = "GET /v2/clusters/{cluster_id}/tasks/{task_id}"
+	routeKubeconfig           = "GET /v2/clusters/{cluster_id}/kubeconfig"
+	routeFeatureGates         = "GET /v2/feature-gates"
+	routeAdmissionControllers = "GET /v2/admission-controllers"
 )
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -88,7 +92,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		failures: map[string]int{},
 		failNext: map[string]fakeFailure{}, failureBodies: map[string]fakeBody{},
 		failedTaskTypes: map[string]bool{}, stuckTaskTypes: map[string]bool{},
-		settles: map[string]fakeSettle{},
+		settles: map[string]fakeSettle{}, kubeconfig: testKubeconfig,
 		queries: map[string]string{}, bodies: map[string][]byte{}, calls: map[string]int{},
 	}
 
@@ -104,6 +108,23 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	f.handle(mux, routeUpgradeMinor, f.upgradeCluster(true))
 	f.handle(mux, routeTasks, f.listTasks)
 	f.handle(mux, routeTask, f.getTask)
+	f.handle(mux, routeKubeconfig, f.getKubeconfig)
+	f.handle(mux, routeFeatureGates, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, mksclient.FeatureGatesList{FeatureGates: &[]mksclient.AvailableFeatureGates{
+			{KubeVersionMinor: new("1.30"), Names: &[]string{"TopologyManager"}},
+			{KubeVersionMinor: new("1.31"), Names: &[]string{"SidecarContainers", "TopologyManager"}},
+			{KubeVersionMinor: new("1.32")},
+			{KubeVersionMinor: new("1.33"), Names: &[]string{"TopologyManager", "SidecarContainers", "TopologyManager"}},
+		}})
+	})
+	f.handle(mux, routeAdmissionControllers, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, mksclient.AdmissionControllersList{AdmissionControllers: &[]mksclient.AvailableAdmissionControllers{
+			{KubeVersionMinor: new("1.30"), Names: &[]string{"NodeRestriction"}},
+			{KubeVersionMinor: new("1.31"), Names: &[]string{"AlwaysPullImages", "NodeRestriction"}},
+			{KubeVersionMinor: new("1.32")},
+			{KubeVersionMinor: new("1.33"), Names: &[]string{"NodeRestriction", "AlwaysPullImages", "NodeRestriction"}},
+		}})
+	})
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 
@@ -171,6 +192,19 @@ func (f *fakeAPI) getCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, mksclient.ClusterResp{Cluster: &c})
+}
+
+func (f *fakeAPI) getKubeconfig(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("cluster_id")
+	_, ok := f.clusters[id]
+	if !ok {
+		writeNotFound(w, id)
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/yaml")
+	_, _ = io.WriteString(w, f.kubeconfig)
 }
 
 func (f *fakeAPI) createCluster(w http.ResponseWriter, r *http.Request) {

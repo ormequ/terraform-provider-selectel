@@ -143,6 +143,10 @@ func errGettingObject(object, id string, err error) error {
 	return fmt.Errorf("error getting %s '%s': %s", object, id, err)
 }
 
+func errGettingObjects(object string, err error) error {
+	return fmt.Errorf("error getting %s: %s", object, err)
+}
+
 func errDeletingObject(object, id string, err error) error {
 	return fmt.Errorf("error deleting %s '%s': %s", object, id, err)
 }

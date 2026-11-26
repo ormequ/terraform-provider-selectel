@@ -19,6 +19,16 @@ import (
 
 var clusterDocs = schemadoc.Resource{Name: "cluster", Location: "managed-kubernetes"}
 
+var projectIDField = schemadoc.Field{
+	Definition: "Unique identifier of the associated project, for example, `a07abc12310546f1b9291ab3013a7d75`.",
+	Behavior:   "If omitted, the `project_id` of the provider configuration is used.",
+	Source:     schemadoc.FromResource("selectel_vpc_project_v2", "project ID"),
+	Concept: schemadoc.Link{
+		Title: "Projects",
+		URL:   "https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/",
+	},
+}
+
 // The claims the API sets for an enabled OIDC that omits them.
 const (
 	oidcUsernameClaim = "sub"
@@ -102,15 +112,7 @@ func (r *clusterResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 					stringplanmodifier.UseStateForUnknown(),
 					schemadoc.RequiresReplace(),
 				},
-			}, schemadoc.Field{
-				Definition: "Unique identifier of the associated project, for example, `a07abc12310546f1b9291ab3013a7d75`.",
-				Behavior:   "If omitted, the `project_id` of the provider configuration is used.",
-				Source:     schemadoc.FromResource("selectel_vpc_project_v2", "project ID"),
-				Concept: schemadoc.Link{
-					Title: "Projects",
-					URL:   "https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/",
-				},
-			}),
+			}, projectIDField),
 			"kube_version": clusterDocs.String(schema.StringAttribute{
 				Required: true,
 				Validators: []validator.String{
@@ -124,7 +126,7 @@ func (r *clusterResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 					"If the patch version is omitted, the API uses the latest one when it creates the cluster, and a later patch upgrade is not a change. " +
 					"The cluster may run a newer version than configured, for example after patch auto-upgrade: " +
 					"a configured version lower than the one in the state is accepted with no change and never downgrades the cluster.",
-				Source: schemadoc.FromDataSource("selectel_mks_kube_versions_v1", "available versions"),
+				Source: schemadoc.FromDataSource("selectel_mks_kube_versions_v2", "available versions"),
 			}),
 			"cluster_type": clusterDocs.String(schema.StringAttribute{
 				Optional: true,
@@ -281,7 +283,7 @@ func (r *clusterResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 						Definition: "Set of feature gates enabled in the cluster.",
 						Behavior: "A minor upgrade removes the feature gates that the new version does not have, " +
 							"so remove them from the configuration in the same change.",
-						Source: schemadoc.FromDataSource("selectel_mks_feature_gates_v1", "available feature gates"),
+						Source: schemadoc.FromDataSource("selectel_mks_feature_gates_v2", "available feature gates"),
 						Concept: schemadoc.Link{
 							Title: "Feature gates",
 							URL:   "https://docs.selectel.ru/en/managed-kubernetes/clusters/feature-gates/",
@@ -296,7 +298,7 @@ func (r *clusterResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 						Definition: "Set of admission controllers enabled in the cluster.",
 						Behavior: "A minor upgrade removes the admission controllers that the new version does not have, " +
 							"so remove them from the configuration in the same change.",
-						Source: schemadoc.FromDataSource("selectel_mks_admission_controllers_v1", "available admission controllers"),
+						Source: schemadoc.FromDataSource("selectel_mks_admission_controllers_v2", "available admission controllers"),
 						Concept: schemadoc.Link{
 							Title: "Admission controllers",
 							URL:   "https://docs.selectel.ru/en/managed-kubernetes/clusters/admission-controllers/",

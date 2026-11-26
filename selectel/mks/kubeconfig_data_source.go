@@ -13,6 +13,8 @@ import (
 	"github.com/terraform-providers/terraform-provider-selectel/selectel/internal/schemadoc"
 )
 
+const kubeconfigFieldPattern = `(?m)^[ \t]*%s:[ \t]*(\S+)`
+
 type kubeconfigDataSource struct{ dataConnection }
 
 func NewKubeconfigDataSource() datasource.DataSource { return &kubeconfigDataSource{} }
@@ -94,7 +96,7 @@ func (d *kubeconfigDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		{"client-certificate-data", &config.ClientCert},
 		{"client-key-data", &config.ClientKey},
 	} {
-		match := regexp.MustCompile(`(?m)^[ \t]*` + field.name + `:[ \t]*(\S+)`).FindSubmatch(raw)
+		match := regexp.MustCompile(fmt.Sprintf(kubeconfigFieldPattern, field.name)).FindSubmatch(raw)
 		if match == nil {
 			err = fmt.Errorf("unable to find %s field in kubeconfig", field.name)
 			resp.Diagnostics.AddError("Error reading "+objectKubeConfig, errGettingObject(objectKubeConfig, clusterID, err).Error())

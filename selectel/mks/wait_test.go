@@ -15,19 +15,19 @@ func TestTaskWaiterTaskAPIError(t *testing.T) {
 	fake := newFakeAPI(t)
 	client := fake.client()
 
-	_, err := newTaskWaiter(context.Background(), client, "gone", time.Millisecond)
+	_, err := newTaskWaiter(context.Background(), client, "gone", "", time.Millisecond)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "error listing tasks of cluster gone")
 
 	fake.seedCluster(testClusterID)
 	fake.seedTask(testClusterID, "", "CREATE_CLUSTER", false)
 	fake.fail(routeTask, http.StatusForbidden)
-	err = newCreatedTaskWaiter(client, testClusterID, time.Millisecond).Wait(context.Background())
+	err = newCreatedTaskWaiter(client, testClusterID, "", time.Millisecond).Wait(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "error getting task")
 
 	fake.fail(routeTasks, http.StatusForbidden)
-	err = newCreatedTaskWaiter(client, testClusterID, time.Millisecond).WaitClusterDeleted(context.Background())
+	err = newCreatedTaskWaiter(client, testClusterID, "", time.Millisecond).WaitClusterDeleted(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "error listing tasks of cluster")
 }
@@ -40,19 +40,19 @@ func TestTaskWaiterSurvivesTransientAPIErrors(t *testing.T) {
 	fake.failFor(routeTasks, http.StatusServiceUnavailable, 1)
 	fake.failFor(routeTask, http.StatusTooManyRequests, 1)
 	fake.seedTask(testClusterID, "", "CREATE_CLUSTER", false)
-	err := newCreatedTaskWaiter(client, testClusterID, time.Millisecond).Wait(context.Background())
+	err := newCreatedTaskWaiter(client, testClusterID, "", time.Millisecond).Wait(context.Background())
 	require.NoError(t, err)
 
 	fake.failFor(routeTasks, http.StatusTooManyRequests, 1)
 	fake.failFor(routeTask, http.StatusServiceUnavailable, 1)
 	fake.removeCluster(testClusterID)
-	err = newCreatedTaskWaiter(client, testClusterID, time.Millisecond).WaitClusterDeleted(context.Background())
+	err = newCreatedTaskWaiter(client, testClusterID, "", time.Millisecond).WaitClusterDeleted(context.Background())
 	require.NoError(t, err)
 
 	fake.server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	err = newCreatedTaskWaiter(client, testClusterID, time.Millisecond).Wait(ctx)
+	err = newCreatedTaskWaiter(client, testClusterID, "", time.Millisecond).Wait(ctx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
@@ -90,4 +90,26 @@ func TestWaitActive(t *testing.T) {
 	_, err = waitActive(ctx, client, testClusterID, time.Millisecond)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Contains(t, err.Error(), "last state: cluster "+testClusterID+" is in PENDING_UPDATE")
+}
+
+func TestTaskWaiterScope(t *testing.T) {
+	for _, scope := range []string{"", "nodegroup-1"} {
+		t.Run("scope "+scope, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			client := fake.client()
+			fake.seedCluster(testClusterID)
+			fake.seedTask(testClusterID, "", "OLD", true)
+
+			waiter, err := newTaskWaiter(context.Background(), client, testClusterID, scope, time.Millisecond)
+			require.NoError(t, err)
+			for _, other := range []string{"", "nodegroup-1", "nodegroup-2"} {
+				fake.seedTask(testClusterID, other, "TASK_OF_"+other, other != scope)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			require.NoError(t, waiter.Wait(ctx))
+			assert.Equal(t, 1, fake.callCount(routeTask))
+		})
+	}
 }

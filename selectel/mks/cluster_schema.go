@@ -19,6 +19,16 @@ import (
 
 var clusterDocs = schemadoc.Resource{Name: "cluster", Location: "managed-kubernetes"}
 
+var projectIDField = schemadoc.Field{
+	Definition: "Unique identifier of the associated project, for example, `a07abc12310546f1b9291ab3013a7d75`.",
+	Behavior:   "If omitted, the `project_id` of the provider configuration is used.",
+	Source:     schemadoc.FromResource("selectel_vpc_project_v2", "project ID"),
+	Concept: schemadoc.Link{
+		Title: "Projects",
+		URL:   "https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/",
+	},
+}
+
 // The claims the API sets for an enabled OIDC that omits them.
 const (
 	oidcUsernameClaim = "sub"
@@ -102,15 +112,7 @@ func (r *clusterResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 					stringplanmodifier.UseStateForUnknown(),
 					schemadoc.RequiresReplace(),
 				},
-			}, schemadoc.Field{
-				Definition: "Unique identifier of the associated project, for example, `a07abc12310546f1b9291ab3013a7d75`.",
-				Behavior:   "If omitted, the `project_id` of the provider configuration is used.",
-				Source:     schemadoc.FromResource("selectel_vpc_project_v2", "project ID"),
-				Concept: schemadoc.Link{
-					Title: "Projects",
-					URL:   "https://docs.selectel.ru/en/control-panel-actions/projects/about-projects/",
-				},
-			}),
+			}, projectIDField),
 			"kube_version": clusterDocs.String(schema.StringAttribute{
 				Required: true,
 				Validators: []validator.String{

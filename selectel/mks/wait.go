@@ -53,16 +53,18 @@ func waitActive(ctx context.Context, client *mksv2.ServiceClient, clusterID stri
 }
 
 // taskWaiter waits for the tasks one mutating API call created: the ones listed after it and absent before it.
+// It takes the tasks of the node group nodegroupID, or of the cluster itself when nodegroupID is empty.
 type taskWaiter struct {
-	client    *mksv2.ServiceClient
-	clusterID string
-	interval  time.Duration
-	before    map[string]struct{}
+	client      *mksv2.ServiceClient
+	clusterID   string
+	nodegroupID string
+	interval    time.Duration
+	before      map[string]struct{}
 }
 
-// newTaskWaiter remembers the tasks of the cluster before a mutating call.
-func newTaskWaiter(ctx context.Context, client *mksv2.ServiceClient, clusterID string, interval time.Duration) (*taskWaiter, error) {
-	w := newCreatedTaskWaiter(client, clusterID, interval)
+// newTaskWaiter remembers the tasks of the cluster or node group before a mutating call.
+func newTaskWaiter(ctx context.Context, client *mksv2.ServiceClient, clusterID, nodegroupID string, interval time.Duration) (*taskWaiter, error) {
+	w := newCreatedTaskWaiter(client, clusterID, nodegroupID, interval)
 
 	tasks, err := w.list(ctx)
 	if err != nil {
@@ -75,14 +77,15 @@ func newTaskWaiter(ctx context.Context, client *mksv2.ServiceClient, clusterID s
 	return w, nil
 }
 
-// newCreatedTaskWaiter counts every task of the cluster, for an object that did
-// not exist before the call.
-func newCreatedTaskWaiter(client *mksv2.ServiceClient, clusterID string, interval time.Duration) *taskWaiter {
+// newCreatedTaskWaiter counts every task of the cluster or node group, for an
+// object that did not exist before the call.
+func newCreatedTaskWaiter(client *mksv2.ServiceClient, clusterID, nodegroupID string, interval time.Duration) *taskWaiter {
 	return &taskWaiter{
-		client:    client,
-		clusterID: clusterID,
-		interval:  interval,
-		before:    map[string]struct{}{},
+		client:      client,
+		clusterID:   clusterID,
+		nodegroupID: nodegroupID,
+		interval:    interval,
+		before:      map[string]struct{}{},
 	}
 }
 
@@ -132,7 +135,7 @@ func (w *taskWaiter) WaitClusterDeleted(ctx context.Context) error {
 	})
 }
 
-// list returns every task of the cluster in one call.
+// list returns every task of the cluster or node group in one call.
 func (w *taskWaiter) list(ctx context.Context) ([]mksclient.Task, error) {
 	// Limit 0 means no limit.
 	tasks, err := task.List(ctx, w.client, w.clusterID, 0, 0)
@@ -141,7 +144,7 @@ func (w *taskWaiter) list(ctx context.Context) ([]mksclient.Task, error) {
 	}
 
 	return slices.DeleteFunc(tasks, func(t mksclient.Task) bool {
-		return valueOrZero(t.NodegroupId) != ""
+		return valueOrZero(t.NodegroupId) != w.nodegroupID
 	}), nil
 }
 
@@ -204,10 +207,10 @@ func waitTaskError(t *mksclient.Task) error {
 	return errors.New(msg)
 }
 
-// callAndWait runs a mutating call on the cluster, waits for the cluster
-// tasks it created and for the cluster to become ACTIVE.
-func callAndWait(ctx context.Context, client *mksv2.ServiceClient, clusterID string, interval time.Duration, call func() error) error {
-	waiter, err := newTaskWaiter(ctx, client, clusterID, interval)
+// callAndWaitTasks runs a mutating call and waits for all the tasks of the cluster, or of the node group
+// nodegroupID, that it created: labels and taints of a node group, for one, are two tasks.
+func callAndWaitTasks(ctx context.Context, client *mksv2.ServiceClient, clusterID, nodegroupID string, interval time.Duration, call func() error) error {
+	waiter, err := newTaskWaiter(ctx, client, clusterID, nodegroupID, interval)
 	if err != nil {
 		return err
 	}
@@ -217,7 +220,13 @@ func callAndWait(ctx context.Context, client *mksv2.ServiceClient, clusterID str
 		return err
 	}
 
-	err = waiter.Wait(ctx)
+	return waiter.Wait(ctx)
+}
+
+// callAndWait runs a mutating call on the cluster, waits for the cluster
+// tasks it created and for the cluster to become ACTIVE.
+func callAndWait(ctx context.Context, client *mksv2.ServiceClient, clusterID string, interval time.Duration, call func() error) error {
+	err := callAndWaitTasks(ctx, client, clusterID, "", interval, call)
 	if err != nil {
 		return err
 	}
